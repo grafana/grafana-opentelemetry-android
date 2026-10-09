@@ -1,0 +1,15 @@
+[versions]
+agp = "9.1.1"
+desugar = "2.1.4"
+opentelemetryAndroid = "1.7.0-alpha"
+junit = "4.13.2"
+
+[libraries]
+desugar-jdk-libs = { module = "com.android.tools:desugar_jdk_libs", version.ref = "desugar" }
+opentelemetry-android-bom = { module = "io.opentelemetry.android:opentelemetry-android-bom", version.ref = "opentelemetryAndroid" }
+opentelemetry-android-agent = { module = "io.opentelemetry.android:android-agent" }
+opentelemetry-android-core = { module = "io.opentelemetry.android:core" }
+junit = { module = "junit:junit", version.ref = "junit" }
+
+[plugins]
+android-library = { id = "com.android.library", version.ref = "agp" }
