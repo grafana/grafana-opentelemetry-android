@@ -1,6 +1,7 @@
 # Extraction Validation
 
-Local validation on October 9, 2026. This is not release approval or Grafana Cloud ingestion evidence.
+Initial local validation on October 9, 2026, with the October 14 review follow-up recorded below.
+This is not release approval or Grafana Cloud ingestion evidence.
 
 ## Environment
 
@@ -15,9 +16,11 @@ Local validation on October 9, 2026. This is not release approval or Grafana Clo
 
 ### Source preservation
 
-The complete `android/src` directory, including the four original test classes, matches
-`Mobiles/android/grafana-opentelemetry-android/src` at `mobile-o11y-demo` revision
-`fa6ddbb869696b3a62413dd3889ac7944018724d`. No SDK behavior or session features were changed.
+At the initial extraction, the complete `android/src` directory, including the four original test
+classes, matched `Mobiles/android/grafana-opentelemetry-android/src` at `mobile-o11y-demo` revision
+`fa6ddbb869696b3a62413dd3889ac7944018724d`. The review follow-up changes the semantic-convention
+default to match upstream and adds regression tests; the source is no longer byte-for-byte
+identical. Session behavior is unchanged.
 
 ### Library and public API
 
@@ -73,7 +76,29 @@ stopped after testing, and the disposable emulator runs did not save snapshots.
 ### Workflow
 
 `actionlint` 1.7.12 passed for `.github/workflows/validate.yml`. The Gradle commands used in the
-workflow passed locally. The workflow has not been run on GitHub in this extraction branch.
+workflow passed locally. At the time of the initial local validation, the workflow had not yet
+run on GitHub in this extraction branch.
+
+## October 14 Review Follow-Up
+
+`useLatestExperimentalSemanticConventions` now defaults to `true`, matching the pinned
+[upstream Android 1.7.0 configuration](https://github.com/open-telemetry/opentelemetry-android/blob/v1.7.0/android-agent/src/main/kotlin/io/opentelemetry/android/agent/dsl/SemanticConventionsConfiguration.kt).
+An explicit `false` still selects legacy names, and the upstream configuration hook still runs
+last. There are no dependency version or public API signature changes.
+
+- Regression tests failed against the old default for both Kotlin and Java construction, then
+  passed after the default changed. Tests check upstream crash/screen name mapping, explicit
+  opt-out and the configuration hook; process-global convention state is restored after each test.
+- Reran `:android:check :android:assembleDebug :android:assembleRelease --rerun-tasks` with the
+  updated lockfile: all 19 unit tests, lint, API comparison and debug/release AAR builds passed.
+  Also republished using `:android:publishReleasePublicationToTestRepository`, only locally.
+- Rebuilt all four consumer APKs, including R8-minified releases, and reran removal dependency
+  checks and consumer lint. A second build with `--refresh-dependencies` also passed.
+- Reran `consumer/smoke_test.py` on API 23 and API 35 arm64 emulators: all eight combinations
+  exported correlated logs, client spans and connected local backend spans.
+
+These follow-up runs used the same local receiver setup above, not hosted Faro/Grafana or physical
+devices. No package was released.
 
 ## Not Yet Verified
 

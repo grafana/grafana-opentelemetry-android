@@ -64,9 +64,15 @@ through another endpoint.
 | `serviceNamespace` / `serviceVersion` | Not set |
 | `resourceAttributes` | Empty |
 | `diskBufferingEnabled` | `true` |
-| `useLatestExperimentalSemanticConventions` | `false` |
+| `useLatestExperimentalSemanticConventions` | `true` |
 | `sessionBackgroundInactivityTimeout` | 15 minutes |
 | `sessionMaxLifetime` | 4 hours |
+
+The semantic-convention default matches upstream Android `1.7.0`. Set
+`useLatestExperimentalSemanticConventions = false` explicitly to keep legacy names such as
+`device.crash` and `screen.name` instead of `app.crash` and `app.screen.name`. This compatibility
+option does not mean that only stable semantic conventions are emitted. The experimental
+`configureUpstream` block can still override this setting.
 
 `otlpEndpoint` and `serviceName` are required. The endpoint must begin with lowercase `http://` or
 `https://` and must not contain a query string or fragment. HTTP remains useful for emulator loopback

@@ -7,6 +7,7 @@ import io.opentelemetry.android.agent.dsl.SemanticConventionsConfiguration
 import io.opentelemetry.android.agent.dsl.SessionConfiguration
 import io.opentelemetry.android.config.OtelRumConfig
 import io.opentelemetry.android.instrumentation.AndroidInstrumentationLoader
+import io.opentelemetry.android.semconv.internal.SemconvCompat
 import io.opentelemetry.api.common.AttributeKey
 import io.opentelemetry.api.common.Attributes
 import io.opentelemetry.sdk.common.Clock
@@ -14,15 +15,73 @@ import io.opentelemetry.sdk.resources.Resource
 import io.opentelemetry.sdk.resources.ResourceBuilder
 import java.lang.reflect.Proxy
 import java.time.Duration
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalGrafanaOtelApi::class)
 class GrafanaOtelDefaultsTest {
+    private var originalSemanticConventions = true
+
+    @Before
+    fun saveSemanticConventions() {
+        originalSemanticConventions = SemconvCompat.useLatestExperimental
+    }
+
+    @After
+    fun restoreSemanticConventions() {
+        SemconvCompat.useLatestExperimental = originalSemanticConventions
+    }
+
+    @Test
+    fun `uses upstream experimental semantic conventions by default`() {
+        val settings =
+            GrafanaOtelConfiguration(
+                otlpEndpoint = "https://collector.example.test/otlp/app-key",
+                serviceName = "quickpizza-android",
+            )
+        val harness = newUpstreamConfiguration()
+        val semanticConventions =
+            harness.configuration.field<SemanticConventionsConfiguration>("semanticConventions")
+
+        assertTrue(semanticConventions.useLatestExperimental)
+        assertTrue(settings.useLatestExperimentalSemanticConventions)
+        SemconvCompat.useLatestExperimental = false
+
+        harness.configuration.applyGrafanaOtelConfiguration(settings)
+
+        assertTrue(semanticConventions.useLatestExperimental)
+        assertTrue(SemconvCompat.useLatestExperimental)
+        assertEquals("app.crash", SemconvCompat.map("app.crash"))
+        assertEquals("app.screen.name", SemconvCompat.map("app.screen.name"))
+    }
+
+    @Test
+    fun `allows opting out of experimental semantic conventions`() {
+        val harness = newUpstreamConfiguration()
+        SemconvCompat.useLatestExperimental = true
+
+        harness.configuration.applyGrafanaOtelConfiguration(
+            GrafanaOtelConfiguration(
+                otlpEndpoint = "https://collector.example.test/otlp/app-key",
+                serviceName = "quickpizza-android",
+                useLatestExperimentalSemanticConventions = false,
+            ),
+        )
+
+        val semanticConventions =
+            harness.configuration.field<SemanticConventionsConfiguration>("semanticConventions")
+        assertFalse(semanticConventions.useLatestExperimental)
+        assertFalse(SemconvCompat.useLatestExperimental)
+        assertEquals("device.crash", SemconvCompat.map("app.crash"))
+        assertEquals("screen.name", SemconvCompat.map("app.screen.name"))
+    }
+
     @Test
     fun `maps every Grafana setting to the upstream configuration`() {
         val customKey = AttributeKey.stringKey("deployment.environment.name")
@@ -86,12 +145,14 @@ class GrafanaOtelDefaultsTest {
         harness.configuration.applyGrafanaOtelConfiguration(settings) {
             httpExport { baseUrl = "https://override.example.test" }
             session { maxLifetime = 3.hours }
+            semanticConventions { useLatestExperimental = false }
         }
 
         val export = harness.configuration.field<HttpExportConfiguration>("exportConfig")
         val session = harness.configuration.field<SessionConfiguration>("sessionConfig")
         assertEquals("https://override.example.test", export.baseUrl)
         assertEquals(3.hours, session.maxLifetime)
+        assertFalse(SemconvCompat.useLatestExperimental)
     }
 
     @Test

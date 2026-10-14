@@ -9,6 +9,7 @@ desugar-jdk-libs = { module = "com.android.tools:desugar_jdk_libs", version.ref 
 opentelemetry-android-bom = { module = "io.opentelemetry.android:opentelemetry-android-bom", version.ref = "opentelemetryAndroid" }
 opentelemetry-android-agent = { module = "io.opentelemetry.android:android-agent" }
 opentelemetry-android-core = { module = "io.opentelemetry.android:core" }
+opentelemetry-android-semconv = { module = "io.opentelemetry.android:semconv" }
 junit = { module = "junit:junit", version.ref = "junit" }
 
 [plugins]

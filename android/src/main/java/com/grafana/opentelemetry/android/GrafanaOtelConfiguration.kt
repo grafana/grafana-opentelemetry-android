@@ -20,7 +20,7 @@ class GrafanaOtelConfiguration @JvmOverloads constructor(
     val serviceVersion: String? = null,
     val resourceAttributes: Attributes = Attributes.empty(),
     val diskBufferingEnabled: Boolean = true,
-    val useLatestExperimentalSemanticConventions: Boolean = false,
+    val useLatestExperimentalSemanticConventions: Boolean = true,
     val sessionBackgroundInactivityTimeout: Duration = Duration.ofMinutes(15),
     val sessionMaxLifetime: Duration = Duration.ofHours(4),
 ) {

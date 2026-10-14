@@ -9,11 +9,13 @@ published only to a local directory for validation, not a supported release.
 
 ## Source
 
-The implementation and unit tests are extracted unchanged from
+The implementation and original unit tests were extracted from
 [`mobile-o11y-demo` #110](https://github.com/grafana/mobile-o11y-demo/pull/110), using the module at
 [source revision `fa6ddbb`](https://github.com/grafana/mobile-o11y-demo/tree/fa6ddbb869696b3a62413dd3889ac7944018724d/Mobiles/android/grafana-opentelemetry-android).
 This repository adds a standalone build, API checks and a separate package consumer.
-It does not add new session-management behavior.
+The semantic-convention default now matches upstream (`true`), with an explicit `false` opt-out
+for legacy names and regression coverage for both paths. It does not add new session-management
+behavior.
 
 ## Usage
 

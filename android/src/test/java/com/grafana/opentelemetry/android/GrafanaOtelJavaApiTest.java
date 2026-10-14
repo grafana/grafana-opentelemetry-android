@@ -19,6 +19,7 @@ public class GrafanaOtelJavaApiTest {
                 new GrafanaOtelConfiguration("https://collector.example.test/otlp/app-key", "app");
 
         assertEquals("app", configuration.getServiceName());
+        assertTrue(configuration.getUseLatestExperimentalSemanticConventions());
 
         Method[] initializeMethods =
                 Arrays.stream(GrafanaOtel.class.getDeclaredMethods())
@@ -51,6 +52,7 @@ public class GrafanaOtelJavaApiTest {
         assertEquals("demo", fullConfiguration.getServiceNamespace());
         assertEquals("1.2.3", fullConfiguration.getServiceVersion());
         assertFalse(fullConfiguration.getDiskBufferingEnabled());
+        assertTrue(fullConfiguration.getUseLatestExperimentalSemanticConventions());
         assertThrows(
                 UnsupportedOperationException.class,
                 () -> fullConfiguration.getHeaders().remove("Authorization"));

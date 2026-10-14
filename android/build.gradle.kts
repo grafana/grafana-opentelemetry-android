@@ -40,6 +40,7 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.opentelemetry.android.core)
+    testImplementation(libs.opentelemetry.android.semconv)
 }
 
 val apiValidatorClasspath by configurations.creating
