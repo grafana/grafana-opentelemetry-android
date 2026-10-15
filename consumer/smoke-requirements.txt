@@ -1,0 +1,3 @@
+aiohttp==3.13.5
+opentelemetry-sdk==1.37.0
+opentelemetry-proto==1.37.0
