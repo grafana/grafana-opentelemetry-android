@@ -1,5 +1,5 @@
 [versions]
-agp = "9.1.1"
+agp = "9.4.1"
 desugar = "2.1.4"
 opentelemetryAndroid = "1.7.0-alpha"
 junit = "4.13.2"
