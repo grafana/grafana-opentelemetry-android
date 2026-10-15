@@ -53,7 +53,7 @@ android {
 }
 
 dependencies {
-    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     "grafanaImplementation"("com.grafana.opentelemetry:android:0.0.0-dev")
     "upstreamImplementation"(platform("io.opentelemetry.android:opentelemetry-android-bom:1.7.0-alpha"))
     "upstreamImplementation"("io.opentelemetry.android:android-agent")
