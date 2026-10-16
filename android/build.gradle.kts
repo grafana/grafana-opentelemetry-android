@@ -45,7 +45,7 @@ dependencies {
 
 val apiValidatorClasspath by configurations.creating
 dependencies {
-    apiValidatorClasspath("org.ow2.asm:asm:9.6")
+    apiValidatorClasspath("org.ow2.asm:asm:9.11")
     apiValidatorClasspath("org.ow2.asm:asm-tree:9.6")
     apiValidatorClasspath("org.jetbrains.kotlin:kotlin-metadata-jvm:2.3.10")
 }
