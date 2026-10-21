@@ -1,0 +1,11 @@
+diff --git a/android-agent/src/test/kotlin/io/opentelemetry/android/agent/session/SessionExtensionIntegrationTest.kt b/android-agent/src/test/kotlin/io/opentelemetry/android/agent/session/SessionExtensionIntegrationTest.kt
+--- a/android-agent/src/test/kotlin/io/opentelemetry/android/agent/session/SessionExtensionIntegrationTest.kt
++++ b/android-agent/src/test/kotlin/io/opentelemetry/android/agent/session/SessionExtensionIntegrationTest.kt
+@@ -64,6 +64,7 @@ class SessionExtensionIntegrationTest {
+         val received = CountDownLatch(2)
+         val saved = mutableListOf<Session>()
+         val storage = mockk<SessionStorage>()
++        every { storage.getPreviousSession() } returns null
+         every { storage.save(capture(saved)) } returns Unit
+         MockWebServer().use { server ->
+             server.dispatcher =
