@@ -21,6 +21,10 @@ the backend span, not merely that both services emit telemetry. Repeat for the m
 the upstream-only flavor. A local receiver is not evidence of successful Faro or Grafana Cloud ingest;
 those need their own validation before release.
 
+The smoke test requires **Python 3.10+**. Check `python3 --version` before creating the virtual
+environment. If it is older, use a supported interpreter such as `python3.12` in the `-m venv`
+command below. Recreate any existing virtual environment made with an older Python.
+
 For a repeatable local check, start a dedicated emulator and leave host ports 4318 and 8089 free:
 
 ```sh
