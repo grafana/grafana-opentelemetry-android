@@ -180,7 +180,6 @@ class DraftSessionIntegrationTest {
                 assertTrue(runtime.startNewSession())
                 second = runtime.rum.sessionProvider.getSessionId()
                 assertNotEquals(first, second)
-                assertEquals("write-failed", runtime.storageFailure)
                 runtime.rum.openTelemetry.logsBridge
                     .get("test")
                     .logRecordBuilder()
@@ -194,6 +193,7 @@ class DraftSessionIntegrationTest {
             } finally {
                 runtime.close()
             }
+            assertEquals("write-failed", runtime.storageFailure)
             assertTrue(receiver.received.await(10, SECONDS))
             assertEquals(
                 first,

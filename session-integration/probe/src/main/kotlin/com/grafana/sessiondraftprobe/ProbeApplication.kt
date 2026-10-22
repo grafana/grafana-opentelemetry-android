@@ -1,10 +1,10 @@
 package com.grafana.sessiondraftprobe
 
 import android.app.Activity
-import android.app.ActivityManager
 import android.app.Application
 import android.os.Bundle
 import android.os.Handler
+import android.os.Looper
 import android.os.Process
 import android.widget.TextView
 import com.grafana.opentelemetry.android.ColdStartSessions
@@ -20,19 +20,22 @@ class ProbeApplication : Application() {
     internal lateinit var runtime: DraftSessionRuntime
     lateinit var process: String
     lateinit var report: JSONObject
+    val hasRuntime: Boolean get() = ::runtime.isInitialized
 
     override fun onCreate() {
         super.onCreate()
-        process =
-            (getSystemService(ACTIVITY_SERVICE) as ActivityManager)
-                .runningAppProcesses
-                .first { it.pid == Process.myPid() }
-                .processName
+        val processName = currentProcessName(this)
+        process = processName ?: "unknown"
         report =
             JSONObject()
                 .put("pid", Process.myPid())
                 .put("process", process)
                 .put("launch", UUID.randomUUID().toString())
+        if (processName == null) {
+            report.put("initializationError", "Cannot determine process name; session setup skipped")
+            saveReport()
+            return
+        }
         if (process.endsWith(":contender")) {
             ColdStartSessions(File(noBackupFilesDir, "grafana-sessions"), packageName).use {
                 report.put("storageFailure", it.failure ?: "").put("previous", it.getPreviousSession()?.id ?: "")
@@ -73,6 +76,7 @@ class ProbeApplication : Application() {
     }
 
     fun saveReport() {
+        if (hasRuntime) report.put("storageFailure", runtime.storageFailure ?: "")
         File(filesDir, "report-${process.substringAfter(':', "main")}.json").writeText(report.toString())
     }
 
@@ -97,20 +101,38 @@ class ProbeApplication : Application() {
 }
 
 open class ProbeActivity : Activity() {
+    private val reporter = Handler(Looper.getMainLooper())
+    private val refresh =
+        object : Runnable {
+            override fun run() {
+                val app = application as ProbeApplication
+                if (app.hasRuntime && app.report.optString("storageFailure") != (app.runtime.storageFailure ?: "")) {
+                    app.saveReport()
+                }
+                reporter.postDelayed(this, 200)
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val app = application as ProbeApplication
-        if (intent.getBooleanExtra("reset", false)) app.reset()
+        if (app.hasRuntime && intent.getBooleanExtra("reset", false)) app.reset()
         app.report.put("actionToken", intent.getStringExtra("actionToken"))
         val crashMode = intent.getStringExtra("crashMode") ?: "abort"
         app.report.put("crashMode", crashMode)
         app.saveReport()
         setContentView(TextView(this).apply { text = app.report.toString(2) })
-        if (intent.getBooleanExtra("nativeCrash", false)) {
+        reporter.post(refresh)
+        if (app.hasRuntime && intent.getBooleanExtra("nativeCrash", false)) {
             Handler(mainLooper).postDelayed({
                 if (crashMode == "signal") Process.sendSignal(Process.myPid(), 6) else NativeCrash.abortNow()
             }, 12000)
         }
+    }
+
+    override fun onDestroy() {
+        reporter.removeCallbacks(refresh)
+        super.onDestroy()
     }
 }
 

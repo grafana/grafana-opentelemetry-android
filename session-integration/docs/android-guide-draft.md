@@ -10,6 +10,8 @@ change the published package or the accepted cross-SDK contract.
 Initialize in `Application.onCreate`, before emitting telemetry. Supply the real,
 stable Android process name, including any `:worker` suffix, not the PID. The
 local probe shows one way to obtain it on API 23 and later.
+If the process name is unavailable, skip setup rather than assigning a worker
+the main process's storage.
 
 ```kotlin
 // Internal draft API, not available in a released package.
@@ -43,7 +45,8 @@ Spans already started keep their original ID after reset. New logs and spans
 use the new ID. Replayed records keep the ID captured when they were recorded;
 do not relabel them with the current session.
 
-Stop telemetry callers before shutdown. `runtime.close()` releases storage even
+Stop telemetry callers before shutdown. Call `runtime.close()` off the UI thread:
+it waits for pending writes before releasing storage, even
 when SDK shutdown throws. Initialization failure also releases it. In either
 case, restart the process instead of trying to initialize the SDK again.
 
@@ -54,9 +57,15 @@ and unreadable existing records are preserved. An unavailable directory or a
 competing owner falls back to memory. Telemetry and reset must still work when
 a session write fails.
 
-After a failed write, the next launch can link only to the last durable session,
+Saves update memory immediately and write on a single background worker. Pending
+saves keep only the latest session. The initial read and file-lock acquisition
+are still synchronous; startup is not disk-free.
+
+After a failed write, or process death before a queued write finishes, the next
+launch can link only to the last durable session,
 which may be older than the immediately preceding process. `storageFailure`
-keeps the latest failure; success does not clear it. Writes are atomic and synced, but not a device power-loss
+keeps the latest failure; an asynchronous failure may appear after `save()` returns,
+and success does not clear it. Writes are atomic and synced, but not a device power-loss
 guarantee. Physical-device startup and storage costs still need measurement.
 
 ## Configuration that still needs agreement

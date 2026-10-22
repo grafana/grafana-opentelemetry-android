@@ -18,16 +18,19 @@ OTel 1.7.0 dependency and public API stay unchanged.
   Its Boolean return value is provisional. A rejected concurrent reset is not queued.
 - Missing or corrupt data starts fresh. Unknown formats, oversized and unreadable records
   are left untouched. A competing owner or failed write falls back to memory.
+- Saves update memory immediately. One background writer persists the latest pending
+  session; disk writes and syncing do not block session creation or reset.
 - Storage stays owned until shutdown, including when an Activity is destroyed.
   Initialization failure closes it. After shutdown, restart the process instead
   of reinitializing. Stop telemetry callers before shutdown, as with the SDK itself.
+  Shutdown waits for pending writes before releasing ownership; run it off the UI thread.
 
 ```mermaid
 flowchart TD
     A[Process starts] --> B[Own this process's storage]
     B --> C[Read previous session once]
     C --> D[SDK creates a new session]
-    D --> E[Save the new session]
+    D --> E[Update memory and queue persistence]
     E --> F[Emit one linked session.start]
     F --> G[Logs and traces use the current session]
     G --> H[Manual reset or SDK expiry]
@@ -92,7 +95,7 @@ span attribution and logs with an explicit historical ID. They disable disk
 buffering to isolate this path. File tests include malformed data, atomic-file
 recovery, write failure and competing owners. None sends data to Grafana Cloud.
 
-## JVM check, October 22
+## Earlier JVM check, October 22
 
 - All 61 JVM tests passed: 42 draft cases across Robolectric API 23/35 and the
   package's existing 19 tests. The lock probe also launches a separate desktop
@@ -130,12 +133,17 @@ accepted preview scope. Runtime evidence is kept separately from JVM results.
 The repository's existing CI validates the normal package, not this standalone
 draft. Run the draft checks above separately.
 
-On October 22, all 61 JVM tests and the refreshed upstream checks passed. The
+Before the asynchronous-write follow-up, all 61 JVM tests and the refreshed
+upstream checks passed. The
 R8-minified, non-debuggable Release probe passed all eight runtime groups on
 API 23 and 35 arm64 emulators, including native `abort()` and one-time crash
 replay under the crashed session. The original signal-only trigger still times
 out on API 23, including without OTel capture. Those failed controls remain in
 the evidence; the SDK signal handler is unchanged.
+
+The [review follow-up](docs/evidence-20261022.md#review-follow-up) records the
+new asynchronous-write and process-lookup tests. Earlier counts above describe
+the synchronous implementation, not the updated code.
 
 ## Still separate
 
@@ -147,9 +155,12 @@ defaults remain; in particular, a parent-based trace sampler is not an all-signa
 100% sampling guarantee.
 
 The stored format contains only identity and start time. It does not restore a
-session lifetime or sampling decision. After a write failure, the next launch can
+session lifetime or sampling decision. If the process dies before a queued write
+finishes, or after a write failure, the next launch can
 link only to the last durable record, which may be older than the preceding launch.
 Atomic writes are best effort, not a power-loss durability guarantee.
+The bounded initial read and file-lock acquisition remain synchronous so the first
+session can link to its predecessor. This does not make initialization disk-free.
 
 Final validation still needs the merged reset API and agreed configuration,
 physical-device storage/startup cost, full-duration timeouts and hosted ingestion/UI.

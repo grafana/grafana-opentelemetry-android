@@ -168,6 +168,7 @@ def main():
         def ready():
             current = report(role)
             if current and current.get("actionToken") == token:
+                assert not current.get("initializationError"), current
                 return current
 
         current = wait(ready)
@@ -186,6 +187,14 @@ def main():
 
     def stored(role="main"):
         return json.loads(shell("cat " + record_path(role)))
+
+    def wait_stored(current, role="main"):
+        def committed():
+            try:
+                return stored(role)["id"] == current["session"]
+            except (subprocess.CalledProcessError, ValueError, KeyError):
+                return False
+        wait(committed)
 
     def previous(current):
         matches = [r for r in events(current, "session.start") if r["attrs"]["session.id"] == current["session"]]
@@ -283,12 +292,13 @@ def main():
             return
         first = launch()
         assert previous(first) is None
+        wait_stored(first)
         stop()
         second = launch()
         assert second["pid"] != first["pid"] and second["session"] != first["session"]
         assert previous(second) == first["session"]
         assert len(events(second, "session.start")) == 1 and not events(second, "session.end")
-        assert stored()["id"] == second["session"]
+        wait_stored(second)
         passed("fresh launch and linked process restart", first=first, second=second)
 
         reset = launch(reset=True)
@@ -302,7 +312,7 @@ def main():
                      and r["name"] in ("session.start", "session.end")]
         assert [(r["name"], r["attrs"]["session.id"]) for r in lifecycle] == [
             ("session.start", second["session"]), ("session.end", second["session"]), ("session.start", reset["session"])]
-        assert stored()["id"] == reset["session"]
+        wait_stored(reset)
         passed("reset order and in-flight span attribution", reset=reset)
 
         contender = launch("contender", telemetry=False)
@@ -310,7 +320,7 @@ def main():
         assert stored()["id"] == reset["session"]
         worker = launch("worker")
         assert previous(worker) is None and worker["session"] != reset["session"]
-        assert stored("worker")["id"] == worker["session"]
+        wait_stored(worker, "worker")
         stop()
         restarted = launch()
         worker2 = launch("worker")
@@ -320,7 +330,8 @@ def main():
         stop()
         write(record_path(), "not json")
         corrupt = launch()
-        assert previous(corrupt) is None and stored()["id"] == corrupt["session"]
+        assert previous(corrupt) is None
+        wait_stored(corrupt)
         assert corrupt["storageFailure"] == "corrupt-record"
         stop()
         future = '{"version":2,"reserved":true}'
@@ -333,13 +344,17 @@ def main():
         stop()
         shell("rm " + record_path())
         writable = launch()
+        wait_stored(writable)
         stop()
         before = shell("cat " + record_path())
         shell("chmod 400 " + record_path())
         shell("chmod 500 no_backup/grafana-sessions")
         try:
             failed = launch()
-            assert failed["storageFailure"] == "write-failed"
+            def write_failed():
+                current = report("main")
+                return current if current and current.get("storageFailure") == "write-failed" else None
+            failed = wait(write_failed)
             assert previous(failed) == writable["session"]
             failed_reset = launch(reset=True)
             wait(lambda: events(failed_reset, "probe.after-reset"))

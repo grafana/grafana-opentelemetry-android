@@ -40,6 +40,12 @@ this exercises export failure, not airplane mode. Cache files must exist before
 the process is stopped. The restarted main process must not drain the worker's
 buffer.
 
+Persistence is asynchronous. Restart cases wait for the expected record before
+stopping the process; this does not prove durability immediately after reset.
+The probe refreshes its report while the Activity exists so the driver can wait
+for asynchronous write failures. An unavailable process name stops SDK setup
+with an explicit error rather than using another process's storage.
+
 The crash check requires natural process termination. The JNI fixture only calls
 libc `abort()` outside a signal handler; it installs no handler and changes no
 SDK capture code. A timeout is a failure, not permission to force-stop the

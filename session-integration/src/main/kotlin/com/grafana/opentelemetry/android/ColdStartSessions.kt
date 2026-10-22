@@ -14,12 +14,19 @@ import java.io.IOException
 import java.io.RandomAccessFile
 import java.nio.channels.FileLock
 import java.security.MessageDigest
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /** Draft storage: a new linked session on each process launch, never restoration. */
 @OptIn(Incubating::class)
 internal class ColdStartSessions(
     root: File,
     processName: String,
+    private val writer: ExecutorService =
+        Executors.newSingleThreadExecutor { task ->
+            Thread(task, "grafana-session-storage").apply { isDaemon = true }
+        },
 ) : SessionStorage,
     Closeable {
     private val file = recordFile(root, processName)
@@ -30,6 +37,9 @@ internal class ColdStartSessions(
     private var writable = false
     private var closed = false
     private var current: Session = SavedSession("", -1)
+    private var pending: SavedSession? = null
+    private var writing = false
+    private val closeLock = Any()
 
     @Volatile
     var failure: String? = null
@@ -71,7 +81,6 @@ internal class ColdStartSessions(
 
     @Synchronized
     override fun save(newSession: Session) {
-        var output: FileOutputStream? = null
         try {
             val saved = SavedSession(newSession.id, newSession.startTimestamp)
             if (!TraceId.isValid(saved.id) || saved.startTimestamp <= 0) {
@@ -80,6 +89,42 @@ internal class ColdStartSessions(
             }
             current = saved
             if (closed || !writable) return
+            // Only the latest pending session is needed for the next process launch.
+            pending = saved
+            if (!writing) {
+                writing = true
+                try {
+                    writer.execute(::drainWrites)
+                } catch (_: RuntimeException) {
+                    writing = false
+                    pending = null
+                    failure = "write-failed"
+                }
+            }
+        } catch (_: Exception) {
+            failure = "write-failed"
+        }
+    }
+
+    private fun drainWrites() {
+        while (true) {
+            val saved =
+                synchronized(this) {
+                    val next = pending
+                    pending = null
+                    if (next == null) {
+                        writing = false
+                        return
+                    }
+                    next
+                }
+            write(saved)
+        }
+    }
+
+    private fun write(saved: SavedSession) {
+        var output: FileOutputStream? = null
+        try {
             val bytes =
                 JSONObject()
                     .put("version", 1)
@@ -152,10 +197,27 @@ internal class ColdStartSessions(
         }
     }
 
-    @Synchronized
     override fun close() {
-        closed = true
-        releaseOwner()
+        synchronized(closeLock) {
+            synchronized(this) {
+                closed = true
+                writer.shutdown()
+            }
+            // Never give another owner the lease while an old write can still finish.
+            var interrupted = false
+            try {
+                while (true) {
+                    try {
+                        if (writer.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS)) break
+                    } catch (_: InterruptedException) {
+                        interrupted = true
+                    }
+                }
+                releaseOwner()
+            } finally {
+                if (interrupted) Thread.currentThread().interrupt()
+            }
+        }
     }
 
     private fun releaseOwner() {

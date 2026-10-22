@@ -1,7 +1,11 @@
 package com.grafana.opentelemetry.android
 
+import android.util.AtomicFile
+import io.mockk.every
+import io.mockk.mockkConstructor
 import io.opentelemetry.android.Incubating
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -14,7 +18,10 @@ import org.robolectric.annotation.Config
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit.SECONDS
+import java.util.concurrent.atomic.AtomicBoolean
 
 @OptIn(Incubating::class)
 @RunWith(RobolectricTestRunner::class)
@@ -139,17 +146,141 @@ class ColdStartSessionsTest {
     @Test fun `failed save keeps memory current but next launch sees last durable session`() {
         val root = temporary.newFolder("records")
         val displaced = File(temporary.root, "displaced")
-        ColdStartSessions(root, "main").use {
+        val writer = Executors.newSingleThreadExecutor()
+        ColdStartSessions(root, "main", writer).use {
             it.save(first)
+            writer.submit {}.get(10, SECONDS)
             assertTrue(root.renameTo(displaced))
             root.writeText("unavailable")
             it.save(second)
+            writer.submit {}.get(10, SECONDS)
             assertEquals(second.id, it.get().id)
             assertEquals("write-failed", it.failure)
             assertTrue(root.delete())
             assertTrue(displaced.renameTo(root))
         }
         ColdStartSessions(root, "main").use { assertEquals(first.id, it.getPreviousSession()!!.id) }
+    }
+
+    @Test fun `save and get do not wait for the writer and pending saves keep the latest session`() {
+        val writer = Executors.newSingleThreadExecutor()
+        val callers = Executors.newSingleThreadExecutor()
+        val release = CountDownLatch(1)
+        writer.submit { check(release.await(10, SECONDS)) }
+        val storage = ColdStartSessions(temporary.root, "main", writer)
+        try {
+            val current =
+                callers.submit<String> {
+                    storage.save(first)
+                    storage.save(second)
+                    storage.get().id
+                }
+            assertEquals(second.id, current.get(5, SECONDS))
+            assertFalse(ColdStartSessions.recordFile(temporary.root, "main").exists())
+        } finally {
+            release.countDown()
+            storage.close()
+            callers.shutdownNow()
+            assertTrue(callers.awaitTermination(10, SECONDS))
+        }
+        ColdStartSessions(temporary.root, "main").use { assertEquals(second.id, it.getPreviousSession()!!.id) }
+    }
+
+    @Test fun `shutdown drains writes before releasing ownership even when interrupted`() {
+        val release = CountDownLatch(1)
+        val closing = CountDownLatch(1)
+        val closed = CountDownLatch(1)
+        val interrupted = AtomicBoolean()
+        val writer =
+            object : ThreadPoolExecutor(1, 1, 0, SECONDS, LinkedBlockingQueue()) {
+                override fun shutdown() {
+                    super.shutdown()
+                    closing.countDown()
+                }
+            }
+        writer.submit { check(release.await(10, SECONDS)) }
+        val storage = ColdStartSessions(temporary.root, "main", writer)
+        storage.save(first)
+        val closer =
+            Thread {
+                Thread.currentThread().interrupt()
+                storage.close()
+                interrupted.set(Thread.currentThread().isInterrupted)
+                closed.countDown()
+            }
+        try {
+            closer.start()
+            assertTrue(closing.await(5, SECONDS))
+            ColdStartSessions(temporary.root, "main").use { assertEquals("storage-unavailable", it.failure) }
+            assertEquals(1L, closed.count)
+        } finally {
+            release.countDown()
+            closer.join(10000)
+            storage.close()
+        }
+        assertFalse(closer.isAlive)
+        assertEquals(0L, closed.count)
+        assertTrue(interrupted.get())
+        ColdStartSessions(temporary.root, "main").use { assertEquals(first.id, it.getPreviousSession()!!.id) }
+    }
+
+    @Test fun `an in-flight disk write does not hold the session state lock`() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val callers = Executors.newSingleThreadExecutor()
+        mockkConstructor(AtomicFile::class) {
+            every { anyConstructed<AtomicFile>().startWrite() } answers {
+                entered.countDown()
+                check(release.await(10, SECONDS))
+                callOriginal()
+            }
+            val storage = ColdStartSessions(temporary.root, "main")
+            try {
+                storage.save(first)
+                assertTrue(entered.await(5, SECONDS))
+                assertEquals(
+                    second.id,
+                    callers
+                        .submit<String> {
+                            storage.save(second)
+                            storage.get().id
+                        }.get(5, SECONDS),
+                )
+            } finally {
+                release.countDown()
+                storage.close()
+                callers.shutdownNow()
+                assertTrue(callers.awaitTermination(10, SECONDS))
+            }
+        }
+        ColdStartSessions(temporary.root, "main").use { assertEquals(second.id, it.getPreviousSession()!!.id) }
+    }
+
+    @Test fun `a rejected write task leaves the session available in memory`() {
+        val writer = Executors.newSingleThreadExecutor().apply { shutdown() }
+        ColdStartSessions(temporary.root, "main", writer).use {
+            it.save(first)
+            assertEquals(first.id, it.get().id)
+            assertEquals("write-failed", it.failure)
+        }
+        ColdStartSessions(temporary.root, "main").use { assertNull(it.getPreviousSession()) }
+    }
+
+    @Test fun `a later write can succeed after an asynchronous write failure`() {
+        val root = temporary.newFolder("records")
+        val displaced = File(temporary.root, "displaced")
+        val writer = Executors.newSingleThreadExecutor()
+        ColdStartSessions(root, "main", writer).use {
+            assertTrue(root.renameTo(displaced))
+            root.writeText("unavailable")
+            it.save(first)
+            writer.submit {}.get(10, SECONDS)
+            assertEquals("write-failed", it.failure)
+            assertTrue(root.delete())
+            assertTrue(displaced.renameTo(root))
+            it.save(second)
+        }
+        ColdStartSessions(root, "main").use { assertEquals(second.id, it.getPreviousSession()!!.id) }
     }
 
     @Test fun `invalid new sessions cannot replace a durable record`() {

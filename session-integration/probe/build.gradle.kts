@@ -31,6 +31,7 @@ extensions.configure<com.android.build.api.dsl.ApplicationExtension>("android") 
         targetCompatibility = JavaVersion.VERSION_11
     }
     kotlin { compilerOptions { jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11 } }
+    testOptions.unitTests.isIncludeAndroidResources = true
     // Compile the same internal draft and initializer, without publishing a test API.
     sourceSets["main"].kotlin.directories.addAll(
         listOf("../src/main/kotlin", "../../android/src/main/java"),
@@ -44,6 +45,8 @@ dependencyLocking {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.17")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
     implementation(platform("io.opentelemetry.android:opentelemetry-android-bom:1.8.0-session57-draft-alpha-SNAPSHOT"))
     implementation("io.opentelemetry.android:android-agent:1.8.0-session57-draft-SNAPSHOT")
