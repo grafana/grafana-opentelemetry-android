@@ -115,6 +115,27 @@ class ColdStartSessionsTest {
         }
     }
 
+    @Test fun `directory created by another process does not disable persistence`() {
+        val root = File(temporary.root, "records")
+        var mkdirsCalled = false
+        val racingRoot =
+            object : File(root.path) {
+                override fun mkdirs(): Boolean {
+                    mkdirsCalled = true
+                    // Another process creates the directory after the initial isDirectory check.
+                    assertTrue(root.mkdirs())
+                    return false
+                }
+            }
+        ColdStartSessions(racingRoot, "main").use {
+            assertTrue(mkdirsCalled)
+            assertNull(it.failure)
+            it.save(first)
+            assertNull(it.failure)
+        }
+        ColdStartSessions(root, "main").use { assertEquals(first.id, it.getPreviousSession()!!.id) }
+    }
+
     @Test fun `failed save keeps memory current but next launch sees last durable session`() {
         val root = temporary.newFolder("records")
         val displaced = File(temporary.root, "displaced")

@@ -3,7 +3,8 @@
 Draft integration for [#57](https://github.com/grafana/frontend-o11y-knowledge-workbench/issues/57).
 This project is not included in the package build and has no publication task.
 It compiles the real Grafana initializer alongside the draft integration, using
-unmerged upstream APIs. The package's OTel 1.7.0 dependency and public API stay unchanged.
+the merged previous-session getter and the unmerged reset API. The package's
+OTel 1.7.0 dependency and public API stay unchanged.
 
 ## Behavior
 
@@ -37,19 +38,21 @@ flowchart TD
 [#2126](https://github.com/open-telemetry/opentelemetry-android/pull/2126)'s getter.
 The reset integration uses [#2141](https://github.com/open-telemetry/opentelemetry-android/pull/2141),
 which builds on [#2037](https://github.com/open-telemetry/opentelemetry-android/pull/2037).
-All three APIs must be rechecked when their implementations merge.
+The getter merged in #2126 on October 22. Reset still needs adapting to the
+final extension API; this draft keeps the existing #2141 pin until then.
 
 ## Pins
 
 Grafana package base: `eecda6a`.
 
-- Upstream main: `5d1f9bcfaf55a0cacef6ffcb95a9b34703c2bf98`.
-- Previous-session getter: `7aae0f158c5608ed02ad1490342e8aec939b6747`.
+- Upstream main: `7731fe84f026100c70a57b37c43c922cfd92359f`.
+- Previous-session getter: merged in main at `ade9714bda9c6b99ff43b034a19dcea942030e40`.
 - Manual reset and extension API: `a304197eee7e1922e3095570955fc295dcb871f4`.
-- Local combined tree: `2835eed93e078c854902d446a9169785fd19e470`.
+- Local combined commit: `6078b486a88212cef001f9fd023ef9f0781f35be`.
+- Reproducible source tree: `0c96fb83aec465914b79bc30bf3b80c8429bc531`.
 
-The last commit is local only. Reproduce its source tree by merging the two
-pinned PR heads into the pinned main below. Do not use moving branch heads or
+The combined commit is local only. Reproduce its source tree by merging the
+reset pin into the pinned main below. Do not use moving branch heads or
 count earlier prototype results as validation of this draft.
 
 The combined tests also need [one mock update](upstream-test.patch): the reset
@@ -65,9 +68,10 @@ upstream checkout; the example directory must not already exist:
 export DRAFT="$PWD/session-integration"
 git clone https://github.com/open-telemetry/opentelemetry-android.git ../android-session-upstream-draft
 export UPSTREAM="$(cd ../android-session-upstream-draft && pwd)"
-git -C "$UPSTREAM" fetch origin 7aae0f158c5608ed02ad1490342e8aec939b6747 a304197eee7e1922e3095570955fc295dcb871f4
-git -C "$UPSTREAM" switch -c varanha/session-integration-local-base 5d1f9bcfaf55a0cacef6ffcb95a9b34703c2bf98
-git -C "$UPSTREAM" merge --no-edit --no-ff 7aae0f158c5608ed02ad1490342e8aec939b6747 a304197eee7e1922e3095570955fc295dcb871f4
+git -C "$UPSTREAM" fetch origin 7731fe84f026100c70a57b37c43c922cfd92359f a304197eee7e1922e3095570955fc295dcb871f4
+git -C "$UPSTREAM" switch -c varanha/session-integration-local-base 7731fe84f026100c70a57b37c43c922cfd92359f
+git -C "$UPSTREAM" merge --no-edit --no-ff a304197eee7e1922e3095570955fc295dcb871f4
+test "$(git -C "$UPSTREAM" rev-parse 'HEAD^{tree}')" = 0c96fb83aec465914b79bc30bf3b80c8429bc531
 git -C "$UPSTREAM" apply "$DRAFT/upstream-test.patch"
 env -u CI "$UPSTREAM/gradlew" -p "$UPSTREAM" publishToMavenLocal \
   -Pversion=1.8.0-session57-draft \
@@ -88,14 +92,14 @@ span attribution and logs with an explicit historical ID. They disable disk
 buffering to isolate this path. File tests include malformed data, atomic-file
 recovery, write failure and competing owners. None sends data to Grafana Cloud.
 
-## JVM check, October 21
+## JVM check, October 22
 
-- All 59 JVM tests passed: 40 draft cases across Robolectric API 23/35 and the
+- All 61 JVM tests passed: 42 draft cases across Robolectric API 23/35 and the
   package's existing 19 tests. The lock probe also launches a separate desktop
   JVM; it does not run an Android secondary process.
 - Debug and release AAR builds, formatting and Android lint completed. Lint
-  reported no errors and 14 dependency/version-catalog warnings. Coverage for
-  the draft classes was 142/146 lines and 63/68 branches.
+  reported no errors and 15 dependency/version-catalog warnings. Coverage for
+  the draft classes was 143/147 lines and 65/70 branches.
 - The combined upstream agent, core and session-instrumentation `check` tasks
   passed with the test-only mock patch above.
 - The normal package's tests, API check, lint and debug/release builds passed
@@ -108,11 +112,16 @@ including equivalent directory paths. The separate JVM remains locked out until
 the real owner closes. The separate [emulator probe](probe/README.md) checks the
 same rejection against another Android process.
 
+Directory creation also rechecks the path if `mkdirs()` returns false: another
+process may have created it first. A deterministic regression failed on the old
+code on both Robolectric API levels and now verifies that persistence still works.
+
 ## Draft documentation
 
 - [Android guide](docs/android-guide-draft.md)
 - [Gap-matrix update](docs/gap-matrix-draft.md)
-- [Validation evidence](docs/evidence-20261021.md)
+- [October 22 validation evidence](docs/evidence-20261022.md)
+- [Earlier October 21 evidence](docs/evidence-20261021.md)
 - [Emulator procedure](probe/README.md)
 
 These files are drafts for review. They do not change the shared session guide or the
@@ -121,16 +130,19 @@ accepted preview scope. Runtime evidence is kept separately from JVM results.
 The repository's existing CI validates the normal package, not this standalone
 draft. Run the draft checks above separately.
 
-The Debug probe passed all eight runtime groups on the API 35 arm64 emulator.
-API 23 arm64 passed seven, but SIGABRT did not terminate its process, so native
-crash replay there is still unverified. The evidence note records the exact
-environment, source/APK hashes, exported records and cleanup.
+On October 22, all 61 JVM tests and the refreshed upstream checks passed. The
+R8-minified, non-debuggable Release probe passed all eight runtime groups on
+API 23 and 35 arm64 emulators, including native `abort()` and one-time crash
+replay under the crashed session. The original signal-only trigger still times
+out on API 23, including without OTel capture. Those failed controls remain in
+the evidence; the SDK signal handler is unchanged.
 
 ## Still separate
 
 This is not the finish line for #57. The proposed preview sampling and inactivity
-limits still need acceptance. This draft does not add sampling configuration,
-decision history, foreground input tracking or metric export. Existing sampling
+limits need to be recorded explicitly on #57 for the private preview. This draft
+does not add sampling configuration, decision history, foreground input tracking
+or metric export. Existing sampling
 defaults remain; in particular, a parent-based trace sampler is not an all-signal
 100% sampling guarantee.
 
@@ -139,8 +151,9 @@ session lifetime or sampling decision. After a write failure, the next launch ca
 link only to the last durable record, which may be older than the preceding launch.
 Atomic writes are best effort, not a power-loss durability guarantee.
 
-Final validation still needs merged upstream code, the agreed configuration,
-physical-device storage/startup cost, release-runtime testing and hosted ingestion/UI.
+Final validation still needs the merged reset API and agreed configuration,
+physical-device storage/startup cost, full-duration timeouts and hosted ingestion/UI.
+Repeat release-runtime checks when adopting those final dependencies and settings.
 Use the emulator evidence separately from the JVM tests: a historical-ID log in
 a unit test does not establish native crash recovery, and desktop file locks
 alone do not establish Android multi-process behavior.

@@ -102,10 +102,14 @@ open class ProbeActivity : Activity() {
         val app = application as ProbeApplication
         if (intent.getBooleanExtra("reset", false)) app.reset()
         app.report.put("actionToken", intent.getStringExtra("actionToken"))
+        val crashMode = intent.getStringExtra("crashMode") ?: "abort"
+        app.report.put("crashMode", crashMode)
         app.saveReport()
         setContentView(TextView(this).apply { text = app.report.toString(2) })
         if (intent.getBooleanExtra("nativeCrash", false)) {
-            Handler(mainLooper).postDelayed({ Process.sendSignal(Process.myPid(), 6) }, 12000)
+            Handler(mainLooper).postDelayed({
+                if (crashMode == "signal") Process.sendSignal(Process.myPid(), 6) else NativeCrash.abortNow()
+            }, 12000)
         }
     }
 }

@@ -5,10 +5,12 @@ import argparse
 import gzip
 import hashlib
 import json
+import re
 import shlex
 import subprocess
 import threading
 import time
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -105,6 +107,11 @@ def main():
     parser.add_argument("--adb", required=True)
     parser.add_argument("--serial", required=True)
     parser.add_argument("--evidence", required=True)
+    parser.add_argument("--apk", required=True, help="Exact APK installed on the emulator")
+    parser.add_argument("--root-files", action="store_true", help="Use a rooted disposable emulator for a non-debuggable APK")
+    parser.add_argument("--crash-only", action="store_true")
+    parser.add_argument("--crash-mode", choices=("abort", "signal"), default="abort")
+    parser.add_argument("--without-native-capture", action="store_true", help="Expect no native-crash event from the comparison APK")
     args = parser.parse_args()
     evidence = Path(args.evidence)
     evidence.mkdir(parents=True, exist_ok=False)
@@ -114,6 +121,9 @@ def main():
                               timeout=45, capture_output=True).stdout.decode().strip()
 
     def shell(command):
+        if args.root_files:
+            return adb("shell", "su", app_uid, "sh", "-c", shlex.quote(
+                "cd /data/data/" + PACKAGE + " && " + command))
         return adb("shell", "run-as", PACKAGE, "sh", "-c", shlex.quote(command))
 
     def stop():
@@ -151,7 +161,7 @@ def main():
         if reset:
             cmd += ["--ez", "reset", "true"]
         if crash:
-            cmd += ["--ez", "nativeCrash", "true"]
+            cmd += ["--ez", "nativeCrash", "true", "--es", "crashMode", args.crash_mode]
         output = adb(*cmd)
         assert "Error" not in output, output
 
@@ -189,28 +199,88 @@ def main():
         results.append(dict(test=name, status="passed", **details))
         print("PASS " + name, flush=True)
 
+    def crash_check():
+        crashed = launch(reset=True, crash=True)
+        assert crashed["crashMode"] == args.crash_mode
+
+        def terminated():
+            return adb("shell", "sh", "-c", shlex.quote(
+                f"if [ -d /proc/{crashed['pid']} ]; then echo alive; else echo gone; fi")) == "gone"
+
+        try:
+            wait(terminated, seconds=45)
+        finally:
+            (evidence / "crash-process-status.txt").write_text(adb(
+                "shell", "sh", "-c", shlex.quote(
+                    f"cat /proc/{crashed['pid']}/status /proc/{crashed['pid']}/wchan 2>&1; true")))
+        recovery = launch()
+        assert previous(recovery) == crashed["session"]
+
+        def recovered():
+            return [r for r in snapshot() if r["scope"] == "io.opentelemetry.native-crash"
+                    and r["name"] in ("app.crash", "device.crash")]
+
+        if args.without_native_capture:
+            time.sleep(5)
+            assert not recovered(), "Comparison APK unexpectedly captured a native crash"
+            passed(args.crash_mode + " terminates without native capture", crashed=crashed, recovery=recovery)
+            return
+        crash_records = wait(recovered)
+        assert len(crash_records) == 1, crash_records
+        assert crash_records[0]["attrs"]["session.id"] == crashed["session"]
+        assert recovery["session"] != crashed["session"]
+        stop()
+        launch()
+        time.sleep(5)
+        assert len(recovered()) == 1
+        passed(args.crash_mode + " after reset replays once under crashed session", crashed=crashed, recovery=recovery)
+
     assert args.serial.startswith("emulator-"), "Use an emulator, not a personal device"
     assert adb("shell", "getprop", "sys.boot_completed") == "1"
+    assert not args.without_native_capture or args.crash_only, "Comparison is crash-only"
+    if args.root_files:
+        assert adb("shell", "getprop", "ro.debuggable") == "1"
+        assert adb("shell", "id", "-u") == "0", "Run adb root on this disposable emulator first"
+        uid_match = re.search(r"(?:userId|appId)=(\d+)", adb("shell", "dumpsys", "package", PACKAGE))
+        assert uid_match, "Cannot determine the installed app UID"
+        app_uid = uid_match.group(1)
     server = ThreadingHTTPServer(("127.0.0.1", 14318), Collector)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         environment = {"serial": args.serial, "api": adb("shell", "getprop", "ro.build.version.sdk"),
                        "abi": adb("shell", "getprop", "ro.product.cpu.abi"),
-                       "fingerprint": adb("shell", "getprop", "ro.build.fingerprint")}
+                       "fingerprint": adb("shell", "getprop", "ro.build.fingerprint"),
+                       "rootFiles": args.root_files, "crashOnly": args.crash_only,
+                       "crashMode": args.crash_mode,
+                       "withoutNativeCapture": args.without_native_capture,
+                       "package": adb("shell", "dumpsys", "package", PACKAGE)}
         (evidence / "environment.json").write_text(json.dumps(environment, indent=2))
         draft = Path(__file__).resolve().parents[1]
         inputs = {}
         for root in (draft, draft.parent / "android/src/main"):
             for source in sorted(root.rglob("*")):
                 if source.is_file() and not {"build", ".gradle", "__pycache__"}.intersection(source.relative_to(root).parts):
-                    if source.suffix in (".kt", ".kts", ".py", ".xml", ".patch", ".lockfile", ".properties"):
+                    if source.suffix in (".kt", ".java", ".cpp", ".kts", ".py", ".xml", ".patch", ".lockfile", ".properties") or source.name == "CMakeLists.txt":
                         inputs[str(source.relative_to(draft.parent))] = hashlib.sha256(source.read_bytes()).hexdigest()
-        apk = draft / "probe/build/outputs/apk/debug/probe-debug.apk"
-        inputs[str(apk.relative_to(draft.parent))] = hashlib.sha256(apk.read_bytes()).hexdigest()
+        apk = Path(args.apk).resolve()
+        apk_hash = hashlib.sha256(apk.read_bytes()).hexdigest()
+        installed_path = adb("shell", "pm", "path", PACKAGE).splitlines()
+        assert len(installed_path) == 1 and installed_path[0].startswith("package:"), installed_path
+        installed_apk = evidence / "installed.apk"
+        adb("pull", installed_path[0].removeprefix("package:"), str(installed_apk))
+        assert hashlib.sha256(installed_apk.read_bytes()).hexdigest() == apk_hash, "Installed APK differs from --apk"
+        with zipfile.ZipFile(apk) as archive:
+            native_capture = any(name.endswith("/libotel_android_native_crash.so") for name in archive.namelist())
+            assert any(name.endswith("/libsession_probe_crash.so") for name in archive.namelist()), "Missing probe crash library"
+        assert native_capture != args.without_native_capture, "APK native capture does not match the requested check"
+        inputs["installed.apk"] = apk_hash
         (evidence / "inputs-sha256.json").write_text(json.dumps(inputs, indent=2))
         stop()
         assert adb("shell", "pm", "clear", PACKAGE) == "Success"
+        if args.crash_only:
+            crash_check()
+            return
         first = launch()
         assert previous(first) is None
         stop()
@@ -317,25 +387,7 @@ def main():
 
         stop()
         shell("rm files/buffered")
-        crashed = launch(reset=True, crash=True)
-        def terminated():
-            return adb("shell", "sh", "-c", shlex.quote(
-                f"if [ -d /proc/{crashed['pid']} ]; then echo alive; else echo gone; fi")) == "gone"
-        wait(terminated, seconds=45)
-        recovery = launch()
-        assert previous(recovery) == crashed["session"]
-        def recovered():
-            return [r for r in snapshot() if r["scope"] == "io.opentelemetry.native-crash"
-                    and r["name"] in ("app.crash", "device.crash")]
-        crash_records = wait(recovered)
-        assert len(crash_records) == 1, crash_records
-        assert crash_records[0]["attrs"]["session.id"] == crashed["session"]
-        assert recovery["session"] != crashed["session"]
-        stop()
-        launch()
-        time.sleep(5)
-        assert len(recovered()) == 1
-        passed("real SIGABRT after reset replays once under crashed session", crashed=crashed, recovery=recovery)
+        crash_check()
     except BaseException as error:
         results.append(dict(test="run interrupted", status="failed", error=repr(error)))
         raise

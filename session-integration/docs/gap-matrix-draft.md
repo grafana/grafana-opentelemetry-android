@@ -18,7 +18,7 @@ Flutter, React Native and Swift are outside this update.
   `process.title`. Native-crash capture is restricted to the main process.
 - **Replay:** original attribution is required for both native crash recovery
   and accepted buffered telemetry. Use the fresh run results in the
-  [evidence note](evidence-20261021.md); a synthetic historical-ID log is not
+  [evidence note](evidence-20261022.md); a synthetic historical-ID log is not
   native-crash evidence.
 
 These are draft-integration results, not released-package alignment. The normal
@@ -42,14 +42,16 @@ Grafana package still uses its unchanged released dependency.
   claimed for metrics.
 - **Processes:** secondary-process native crashes are intentionally not captured.
   Installation-ID races remain separate from session-record ownership.
-- **Validation:** merged API pins, the agreed configuration, physical-device
+- **Validation:** the merged reset API, agreed configuration, physical-device
   storage/startup behavior and hosted ingestion/UI still need their own evidence.
-  API 23 native-crash replay remains unverified: the emulator's SIGABRT process
-  did not terminate. API 35 passed that check; both passed the other seven groups.
+  The previous-session getter is now tested from merged main. API 23 and 35
+  passed all eight groups in the R8 release probe, including native `abort()`
+  and one-time replay. The original signal-only API 23 trigger still times out,
+  including without OTel capture; keep that control separate from abort results.
 
 ## Before #57 can close
 
-1. Land the required upstream APIs and adapt this draft to the merged code.
+1. Land the reset/extension API and adapt this draft to it; #2126 is already merged.
 2. Agree on the preview scope and record accepted limits explicitly on #57.
 3. Finish the supported Grafana package integration, including its sampling
    configuration, and rerun the focused tests against that exact build.

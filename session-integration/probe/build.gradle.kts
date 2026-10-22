@@ -1,5 +1,7 @@
 plugins { id("com.android.application") }
 
+val disableNativeCrash = providers.gradleProperty("disableNativeCrash").map(String::toBoolean).getOrElse(false)
+
 extensions.configure<com.android.build.api.dsl.ApplicationExtension>("android") {
     namespace = "com.grafana.sessiondraftprobe"
     compileSdk = 37
@@ -9,6 +11,19 @@ extensions.configure<com.android.build.api.dsl.ApplicationExtension>("android") 
         targetSdk = 35
         versionCode = 1
         versionName = "draft-only"
+    }
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = true
+            signingConfig = signingConfigs.getByName("debug")
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+        }
+    }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
     compileOptions {
         isCoreLibraryDesugaringEnabled = true
@@ -22,12 +37,18 @@ extensions.configure<com.android.build.api.dsl.ApplicationExtension>("android") 
     )
 }
 
-dependencyLocking { lockAllConfigurations() }
+dependencyLocking {
+    lockAllConfigurations()
+    // The comparison build omits one locked module; remaining versions stay pinned.
+    if (disableNativeCrash) lockMode = LockMode.LENIENT
+}
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
     implementation(platform("io.opentelemetry.android:opentelemetry-android-bom:1.8.0-session57-draft-alpha-SNAPSHOT"))
     implementation("io.opentelemetry.android:android-agent:1.8.0-session57-draft-SNAPSHOT")
     implementation("io.opentelemetry.android:session:1.8.0-session57-draft-SNAPSHOT")
-    implementation("io.opentelemetry.android.instrumentation:native-crash:1.8.0-session57-draft-alpha-SNAPSHOT")
+    if (!disableNativeCrash) {
+        implementation("io.opentelemetry.android.instrumentation:native-crash:1.8.0-session57-draft-alpha-SNAPSHOT")
+    }
 }

@@ -41,7 +41,9 @@ internal class ColdStartSessions(
         require(processName.isNotBlank()) { "A stable Android process name is required, not a PID" }
         previous =
             try {
-                if (!root.isDirectory && !root.mkdirs()) throw IOException("Cannot create session directory")
+                if (!root.isDirectory && !root.mkdirs() && !root.isDirectory) {
+                    throw IOException("Cannot create session directory")
+                }
                 val lockFile = File(root, file.name + ".lock")
                 synchronized(owners) {
                     val key = lockFile.canonicalPath
