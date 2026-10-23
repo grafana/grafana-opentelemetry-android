@@ -4,6 +4,7 @@ import android.app.Application
 import io.opentelemetry.android.Incubating
 import io.opentelemetry.android.OpenTelemetryRum
 import io.opentelemetry.android.agent.session.SessionExtension
+import io.opentelemetry.sdk.trace.samplers.Sampler
 import java.io.Closeable
 import java.io.File
 
@@ -65,6 +66,8 @@ internal class DraftSessionInstaller {
                         val owner = ColdStartSessions(root, processName)
                         storage = owner
                         session { storage(owner) }
+                        // Private preview keeps traces even when an incoming parent is unsampled.
+                        sdkConfiguration.sampler { trace { Sampler.alwaysOn() } }
                     }
                 DraftSessionRuntime(
                     rum,

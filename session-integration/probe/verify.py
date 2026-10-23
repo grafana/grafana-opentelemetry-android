@@ -40,6 +40,28 @@ def attrs(items):
     return {item.key: value(item.value) for item in items}
 
 
+def sampling_names(phase):
+    cases = ["root"] + [f"remote-{remote}-sampled-{sampled}"
+                        for remote in ("false", "true") for sampled in ("false", "true")]
+    return [f"probe.sampling.{phase}.{case}" for case in cases]
+
+
+def verify_sampling(batch, phase, session):
+    for name in sampling_names(phase):
+        spans = [r for r in batch if r["kind"] == "span" and r["name"] == name]
+        logs = [r for r in batch if r["kind"] == "log" and r["name"] == name]
+        assert len(spans) == 1 and len(logs) == 1, (name, spans, logs)
+        span, log = spans[0], logs[0]
+        assert span["attrs"]["session.id"] == log["attrs"]["session.id"] == session
+        assert span["flags"] & 1 and log["flags"] & 1, name
+        assert span["traceId"] == log["traceId"] and span["spanId"] == log["spanId"], name
+        assert span["traceId"] and span["spanId"], name
+        if name.endswith(".root"):
+            assert not span["parentSpanId"], name
+        else:
+            assert span["traceId"] == "1" * 32 and span["parentSpanId"] == "2" * 16, name
+
+
 class Collector(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
@@ -77,6 +99,7 @@ class Collector(BaseHTTPRequestHandler):
                         for entry in scope.log_records:
                             batch.append(dict(kind="log", name=entry.event_name, scope=scope.scope.name,
                                               time=entry.time_unix_nano, attrs=attrs(entry.attributes),
+                                              flags=entry.flags, traceId=entry.trace_id.hex(), spanId=entry.span_id.hex(),
                                               resource=attrs(group.resource.attributes)))
             elif self.path == "/v1/traces":
                 request = ExportTraceServiceRequest.FromString(body)
@@ -85,6 +108,8 @@ class Collector(BaseHTTPRequestHandler):
                         for entry in scope.spans:
                             batch.append(dict(kind="span", name=entry.name, scope=scope.scope.name,
                                               time=entry.start_time_unix_nano, attrs=attrs(entry.attributes),
+                                              flags=entry.flags, traceId=entry.trace_id.hex(), spanId=entry.span_id.hex(),
+                                              parentSpanId=entry.parent_span_id.hex(),
                                               resource=attrs(group.resource.attributes)))
             else:
                 raise AssertionError(f"Unexpected signal path: {self.path}")
@@ -153,6 +178,12 @@ def main():
         except (subprocess.CalledProcessError, ValueError):
             return None
 
+    def check_sampling(current, phase, session):
+        for name in sampling_names(phase):
+            wait(lambda: events(current, name, "span"))
+            wait(lambda: events(current, name))
+        verify_sampling([r for r in snapshot() if r["resource"].get("probe.launch") == current["launch"]], phase, session)
+
     def launch(role="main", reset=False, crash=False, telemetry=True):
         token = str(time.monotonic_ns())
         activity = {"main": "ProbeActivity", "worker": "WorkerActivity", "contender": "ContenderActivity"}[role]
@@ -178,6 +209,9 @@ def main():
             wait(lambda: events(current, "session.start"))
             for r in events(current, "probe.early-startup") + events(current, "probe.early-startup", "span"):
                 assert r["resource"]["process.title"] == current["process"]
+            check_sampling(current, "startup", events(current, "probe.early-startup")[0]["attrs"]["session.id"])
+            if reset:
+                check_sampling(current, "after-reset", current["session"])
             assert current["duplicateFailure"] == "storage-unavailable"
         return current
 
@@ -397,6 +431,9 @@ def main():
         wait(lambda: events(offline_worker, "probe.early-startup"), seconds=90)
         assert previous(online_worker) == offline_worker["session"]
         assert events(offline_worker, "probe.early-startup")[0]["attrs"]["session.id"] == offline_worker["session"]
+        check_sampling(offline, "startup", offline["session"])
+        check_sampling(offline_reset, "after-reset", offline_reset["session"])
+        check_sampling(offline_worker, "startup", offline_worker["session"])
         passed("buffered logs and spans retain attribution across process death", offline=offline,
                reset=offline_reset, online=online, worker=offline_worker, workerRestart=online_worker, bufferFiles=buffers)
 

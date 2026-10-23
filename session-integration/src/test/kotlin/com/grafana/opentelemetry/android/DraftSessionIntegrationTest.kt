@@ -7,14 +7,21 @@ import io.opentelemetry.android.Incubating
 import io.opentelemetry.android.OpenTelemetryRum
 import io.opentelemetry.android.agent.OpenTelemetryRumInitializer
 import io.opentelemetry.android.internal.services.Services
+import io.opentelemetry.android.internal.services.applifecycle.AppLifecycle
+import io.opentelemetry.android.internal.services.applifecycle.ApplicationStateListener
 import io.opentelemetry.android.session.Session
 import io.opentelemetry.android.session.SessionObserver
 import io.opentelemetry.api.common.AttributeKey
+import io.opentelemetry.api.trace.SpanContext
+import io.opentelemetry.api.trace.TraceFlags
+import io.opentelemetry.api.trace.TraceState
+import io.opentelemetry.context.Context
 import io.opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest
 import io.opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest
 import io.opentelemetry.proto.common.v1.KeyValue
 import io.opentelemetry.proto.logs.v1.LogRecord
 import io.opentelemetry.proto.trace.v1.Span
+import io.opentelemetry.sdk.common.Clock
 import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
@@ -41,6 +48,9 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit.SECONDS
 import java.util.zip.GZIPInputStream
+import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 
 @OptIn(Incubating::class, ExperimentalGrafanaOtelApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -50,11 +60,16 @@ class DraftSessionIntegrationTest {
     private var previousHandler: Thread.UncaughtExceptionHandler? = null
     private val application: Application get() = RuntimeEnvironment.getApplication()
     private val prior = SavedSession("a".repeat(32), 100)
+    private val lifecycleListeners = mutableListOf<ApplicationStateListener>()
 
     @Before fun setUp() {
         previousHandler = Thread.getDefaultUncaughtExceptionHandler()
         val services = mockk<Services>(relaxed = true)
-        every { services.appLifecycle } returns mockk(relaxed = true)
+        val lifecycle = mockk<AppLifecycle>(relaxed = true)
+        every { lifecycle.registerListener(any()) } answers {
+            lifecycleListeners += firstArg<ApplicationStateListener>()
+        }
+        every { services.appLifecycle } returns lifecycle
         every { services.visibleScreenTracker } returns mockk(relaxed = true)
         Services.set(services)
     }
@@ -203,6 +218,231 @@ class DraftSessionIntegrationTest {
                     }.attributesList
                     .value("session.previous_id"),
             )
+        }
+    }
+
+    @Test fun `preview exports traces and logs with sampled and unsampled parents before and after reset`() {
+        Receiver().use { receiver ->
+            val runtime =
+                DraftSessionInstaller().initialize(temporary.root, "preview") { configure ->
+                    initializeIsolated(receiver.configuration, configure)
+                }
+            val expected = mutableMapOf<String, String>()
+            try {
+                val tracer = runtime.rum.openTelemetry.getTracer("preview")
+                val logger =
+                    runtime.rum.openTelemetry.logsBridge
+                        .get("preview")
+                val parents = mutableMapOf("root" to Context.root())
+                for (remote in listOf(false, true)) {
+                    for (sampled in listOf(false, true)) {
+                        val flags = if (sampled) TraceFlags.getSampled() else TraceFlags.getDefault()
+                        val parent =
+                            if (remote) {
+                                SpanContext.createFromRemoteParent("1".repeat(32), "2".repeat(16), flags, TraceState.getDefault())
+                            } else {
+                                SpanContext.create("1".repeat(32), "2".repeat(16), flags, TraceState.getDefault())
+                            }
+                        parents["remote-$remote-sampled-$sampled"] =
+                            Context.root().with(
+                                io.opentelemetry.api.trace.Span
+                                    .wrap(parent),
+                            )
+                    }
+                }
+                repeat(2) { phase ->
+                    val session = runtime.rum.sessionProvider.getSessionId()
+                    for ((name, parent) in parents) {
+                        val label = "preview-$phase-$name"
+                        expected[label] = session
+                        val span = tracer.spanBuilder(label).setParent(parent).startSpan()
+                        try {
+                            assertTrue("$label must be recorded", span.isRecording)
+                            assertTrue("$label must be sampled", span.spanContext.isSampled)
+                            logger
+                                .logRecordBuilder()
+                                .setContext(parent.with(span))
+                                .setBody(label)
+                                .emit()
+                        } finally {
+                            span.end()
+                        }
+                    }
+                    runtime.rum.openTelemetry
+                        .getMeter("preview")
+                        .counterBuilder("preview.counter")
+                        .build()
+                        .add(1)
+                    if (phase == 0) assertTrue(runtime.startNewSession())
+                }
+                tracer
+                    .spanBuilder("after-reset")
+                    .setNoParent()
+                    .startSpan()
+                    .end()
+                logger.logRecordBuilder().setBody("after-reset").emit()
+            } finally {
+                runtime.close()
+            }
+            assertTrue(receiver.received.await(10, SECONDS))
+            assertEquals(2, expected.values.toSet().size)
+            assertEquals(
+                expected,
+                receiver.spans.filter { it.name.startsWith("preview-") }.associate {
+                    it.name to
+                        it.attributesList.value("session.id")
+                },
+            )
+            assertEquals(
+                expected,
+                receiver.logs.filter { it.body.stringValue.startsWith("preview-") }.associate {
+                    it.body.stringValue to
+                        it.attributesList.value("session.id")
+                },
+            )
+            assertEquals(expected.size, receiver.spans.count { it.name.startsWith("preview-") })
+            assertEquals(expected.size, receiver.logs.count { it.body.stringValue.startsWith("preview-") })
+            assertEquals(0, receiver.metricRequests.size)
+        }
+    }
+
+    @Test fun `foreground idle time does not rotate until the four hour maximum`() {
+        var now = 1_000_000_000L
+        val clock = mockk<Clock>()
+        every { clock.now() } answers { now }
+        every { clock.nanoTime() } answers { now }
+        Receiver().use { receiver ->
+            val runtime =
+                DraftSessionInstaller().initialize(temporary.root, "foreground") { configure ->
+                    initializeIsolated(receiver.configuration) {
+                        configure()
+                        this.clock = clock
+                    }
+                }
+            try {
+                assertTrue(lifecycleListeners.isNotEmpty())
+                lifecycleListeners.forEach { it.onApplicationForegrounded() }
+                val started = now
+                val session = runtime.rum.sessionProvider.getSessionId()
+                for (elapsed in listOf(15.minutes, 1.hours, 4.hours - 1.milliseconds)) {
+                    now = started + elapsed.inWholeNanoseconds
+                    assertEquals(session, runtime.rum.sessionProvider.getSessionId())
+                }
+                now = started + 4.hours.inWholeNanoseconds
+                runtime.rum.openTelemetry
+                    .getTracer("preview")
+                    .spanBuilder("after-reset")
+                    .startSpan()
+                    .end()
+                runtime.rum.openTelemetry.logsBridge
+                    .get("preview")
+                    .logRecordBuilder()
+                    .setBody("after-reset")
+                    .emit()
+                assertNotEquals(session, runtime.rum.sessionProvider.getSessionId())
+            } finally {
+                runtime.close()
+            }
+            assertTrue(receiver.received.await(10, SECONDS))
+            val starts = receiver.logs.filter { it.eventName == "session.start" }
+            assertEquals(2, starts.size)
+            val current = starts.single { it.attributesList.value("session.previous_id") != null }
+            assertEquals(
+                current.attributesList.value("session.id"),
+                receiver.spans
+                    .single {
+                        it.name == "after-reset"
+                    }.attributesList
+                    .value("session.id"),
+            )
+            assertEquals(
+                current.attributesList.value("session.id"),
+                receiver.logs
+                    .single {
+                        it.body.stringValue == "after-reset"
+                    }.attributesList
+                    .value("session.id"),
+            )
+        }
+    }
+
+    @Test fun `background expiry survives passive telemetry and is checked before foreground attribution`() {
+        var now = 1_000_000_000L
+        val clock = mockk<Clock>()
+        every { clock.now() } answers { now }
+        every { clock.nanoTime() } answers { now }
+        Receiver().use { receiver ->
+            val runtime =
+                DraftSessionInstaller().initialize(temporary.root, "background") { configure ->
+                    initializeIsolated(receiver.configuration) {
+                        configure()
+                        this.clock = clock
+                    }
+                }
+            val first = runtime.rum.sessionProvider.getSessionId()
+            try {
+                assertTrue(lifecycleListeners.isNotEmpty())
+                lifecycleListeners.forEach { it.onApplicationBackgrounded() }
+                now += (15.minutes - 1.milliseconds).inWholeNanoseconds
+                lifecycleListeners.forEach { it.onApplicationForegrounded() }
+                assertEquals(first, runtime.rum.sessionProvider.getSessionId())
+                now += 1.hours.inWholeNanoseconds
+                assertEquals(first, runtime.rum.sessionProvider.getSessionId())
+                lifecycleListeners.forEach { it.onApplicationBackgrounded() }
+                val tracer = runtime.rum.openTelemetry.getTracer("preview")
+                val logger =
+                    runtime.rum.openTelemetry.logsBridge
+                        .get("preview")
+                now += 10.minutes.inWholeNanoseconds
+                tracer.spanBuilder("background-passive").startSpan().end()
+                logger.logRecordBuilder().setBody("background-passive").emit()
+                assertEquals(first, runtime.rum.sessionProvider.getSessionId())
+                now += 5.minutes.inWholeNanoseconds
+                lifecycleListeners.forEach { it.onApplicationForegrounded() }
+                tracer.spanBuilder("after-reset").startSpan().end()
+                logger.logRecordBuilder().setBody("after-reset").emit()
+                assertNotEquals(first, runtime.rum.sessionProvider.getSessionId())
+            } finally {
+                runtime.close()
+            }
+            assertTrue(receiver.received.await(10, SECONDS))
+            assertEquals(
+                first,
+                receiver.spans
+                    .single { it.name == "background-passive" }
+                    .attributesList
+                    .value("session.id"),
+            )
+            assertEquals(
+                first,
+                receiver.logs
+                    .single { it.body.stringValue == "background-passive" }
+                    .attributesList
+                    .value("session.id"),
+            )
+            val current =
+                receiver.logs.single {
+                    it.eventName == "session.start" && it.attributesList.value(
+                        "session.previous_id",
+                    ) == first
+                }
+            assertEquals(
+                current.attributesList.value("session.id"),
+                receiver.spans
+                    .single {
+                        it.name == "after-reset"
+                    }.attributesList
+                    .value("session.id"),
+            )
+            assertEquals(
+                current.attributesList.value("session.id"),
+                receiver.logs
+                    .single {
+                        it.body.stringValue == "after-reset"
+                    }.attributesList
+                    .value("session.id"),
+            )
+            assertEquals(2, receiver.logs.count { it.eventName == "session.start" })
         }
     }
 

@@ -12,6 +12,11 @@ import com.grafana.opentelemetry.android.DraftSessionRuntime
 import com.grafana.opentelemetry.android.DraftSessions
 import com.grafana.opentelemetry.android.GrafanaOtelConfiguration
 import io.opentelemetry.api.common.Attributes
+import io.opentelemetry.api.trace.Span
+import io.opentelemetry.api.trace.SpanContext
+import io.opentelemetry.api.trace.TraceFlags
+import io.opentelemetry.api.trace.TraceState
+import io.opentelemetry.context.Context
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
@@ -67,6 +72,7 @@ class ProbeApplication : Application() {
                 .startSpan()
                 .end()
             report.put("session", session).put("storageFailure", runtime.storageFailure ?: "")
+            checkSampling("startup")
             // A rejected duplicate must not release the live owner's kernel lock.
             ColdStartSessions(File(noBackupFilesDir, "grafana-sessions"), process).use {
                 report.put("duplicateFailure", it.failure ?: "")
@@ -91,12 +97,53 @@ class ProbeApplication : Application() {
         val accepted = runtime.startNewSession()
         span.end()
         runtime.rum.emitEvent("probe.after-reset")
+        checkSampling("after-reset")
         report
             .put("beforeReset", before)
             .put("resetAccepted", accepted)
             .put("session", runtime.rum.sessionProvider.getSessionId())
             .put("storageFailure", runtime.storageFailure ?: "")
         saveReport()
+    }
+
+    private fun checkSampling(phase: String) {
+        val parents = mutableMapOf("root" to Context.root())
+        for (remote in listOf(false, true)) {
+            for (sampled in listOf(false, true)) {
+                val flags = if (sampled) TraceFlags.getSampled() else TraceFlags.getDefault()
+                val context =
+                    if (remote) {
+                        SpanContext.createFromRemoteParent("1".repeat(32), "2".repeat(16), flags, TraceState.getDefault())
+                    } else {
+                        SpanContext.create("1".repeat(32), "2".repeat(16), flags, TraceState.getDefault())
+                    }
+                parents["remote-$remote-sampled-$sampled"] = Context.root().with(Span.wrap(context))
+            }
+        }
+        for ((name, parent) in parents) {
+            val label = "probe.sampling.$phase.$name"
+            val span =
+                runtime.rum.openTelemetry
+                    .getTracer("probe")
+                    .spanBuilder(label)
+                    .setParent(parent)
+                    .startSpan()
+            try {
+                runtime.rum.openTelemetry.logsBridge
+                    .get("probe")
+                    .logRecordBuilder()
+                    .setContext(parent.with(span))
+                    .setEventName(label)
+                    .emit()
+            } finally {
+                span.end()
+            }
+        }
+        runtime.rum.openTelemetry
+            .getMeter("probe")
+            .counterBuilder("probe.sampling.counter")
+            .build()
+            .add(1)
     }
 }
 

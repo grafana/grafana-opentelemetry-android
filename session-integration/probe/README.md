@@ -46,6 +46,21 @@ The probe refreshes its report while the Activity exists so the driver can wait
 for asynchronous write failures. An unavailable process name stops SDK setup
 with an explicit error rather than using another process's storage.
 
+Each telemetry-producing launch also checks a root span and all combinations
+of local/remote, sampled/unsampled parents. The receiver requires one span and
+one correlated log per case, with the same session ID and sampled flag. The
+reset cases repeat this under the new session; buffered records must keep their
+original attribution. The probe records a metric too, but any metric-export
+request fails the run. These checks cover the draft's no-sampling private-preview
+configuration, not the normal package's defaults.
+
+Run the receiver's mutation checks with the same Python environment:
+
+```sh
+/tmp/session57-probe-python/bin/python -m unittest discover \
+  -s session-integration/probe -p test_verify.py -v
+```
+
 The crash check requires natural process termination. The JNI fixture only calls
 libc `abort()` outside a signal handler; it installs no handler and changes no
 SDK capture code. A timeout is a failure, not permission to force-stop the
