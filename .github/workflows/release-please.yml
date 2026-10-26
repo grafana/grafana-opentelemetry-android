@@ -1,0 +1,36 @@
+name: Prepare Android release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    if: >-
+      github.repository == 'grafana/grafana-opentelemetry-android' &&
+      github.ref == 'refs/heads/main' && vars.RELEASE_AUTOMATION_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Get release bot token
+        id: app-token
+        uses: grafana/shared-workflows/actions/create-github-app-token@2f6fc769c66a2aa8d849650ed270e88088d85e8b
+        with:
+          github_app: ${{ vars.RELEASE_GITHUB_APP }}
+      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          target-branch: main
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

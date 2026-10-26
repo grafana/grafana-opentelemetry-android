@@ -54,13 +54,15 @@ android {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
-    "grafanaImplementation"("com.grafana.opentelemetry:android:0.0.0-dev")
+    "grafanaImplementation"("com.grafana.opentelemetry:android:${file("../version.txt").readText().trim()}")
     "upstreamImplementation"(platform("io.opentelemetry.android:opentelemetry-android-bom:1.7.0-alpha"))
     "upstreamImplementation"("io.opentelemetry.android:android-agent")
 }
 
 dependencyLocking {
     lockAllConfigurations()
+    // This artifact is built from the same checkout; third-party dependencies remain locked.
+    ignoredDependencies.add("com.grafana.opentelemetry:android")
 }
 
 tasks.register("checkRemovalDependencies") {
