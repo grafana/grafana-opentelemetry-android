@@ -1,0 +1,96 @@
+name: Validate or stage Android release
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage_on_central:
+        description: Upload a signed release to Central for manual publishing (select its vX.Y.Z tag)
+        type: boolean
+        default: false
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check release ref before requesting publishing access
+        if: inputs.stage_on_central
+        env:
+          MAVEN_CENTRAL_ENABLED: ${{ vars.MAVEN_CENTRAL_ENABLED }}
+        run: bash .github/scripts/check-release-ref.sh
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: zulu
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+        with:
+          packages: 'platforms;android-37.0 build-tools;37.0.0'
+      - name: Test, sign locally and build consumers
+        run: bash .github/scripts/validate-release.sh
+      - name: Ensure validation did not rewrite tracked files
+        run: git diff --exit-code
+      - name: Save local validation artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-release-validation
+          path: build/test-repository/
+          if-no-files-found: error
+          retention-days: 7
+
+  stage:
+    if: inputs.stage_on_central
+    needs: validate
+    environment: maven-central
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Recheck release ref after approval
+        env:
+          MAVEN_CENTRAL_ENABLED: ${{ vars.MAVEN_CENTRAL_ENABLED }}
+        run: bash .github/scripts/check-release-ref.sh
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: zulu
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
+        with:
+          cache-disabled: true
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+        with:
+          packages: 'platforms;android-37.0 build-tools;37.0.0'
+      - name: Read publishing credentials
+        id: credentials
+        uses: grafana/shared-workflows/actions/get-vault-secrets@2f6fc769c66a2aa8d849650ed270e88088d85e8b
+        with:
+          repo_secrets: |
+            MAVEN_USERNAME=maven-central:username
+            MAVEN_PASSWORD=maven-central:password
+            SIGNING_KEY=maven-central:signing-key
+            SIGNING_PASSWORD=maven-central:signing-password
+      - name: Upload to Central without releasing
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ fromJSON(steps.credentials.outputs.secrets).MAVEN_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ fromJSON(steps.credentials.outputs.secrets).MAVEN_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ fromJSON(steps.credentials.outputs.secrets).SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ fromJSON(steps.credentials.outputs.secrets).SIGNING_PASSWORD }}
+        run: ./gradlew --no-daemon --no-configuration-cache -PpublishToCentral=true :android:publishToMavenCentral

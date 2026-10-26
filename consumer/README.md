@@ -3,7 +3,7 @@
 This is a test fixture, not a production application. Build the local publication from the repository
 root before building this directory. It is intentionally not included by the root Gradle settings.
 
-- `grafana` resolves `com.grafana.opentelemetry:android:0.0.0-dev` from `../build/test-repository`.
+- `grafana` resolves `com.grafana.opentelemetry:android` from `../build/test-repository`, using the version in `../version.txt`.
 - `upstream` resolves the upstream Android agent directly, with no Grafana dependency.
 - `src/main` contains the identical application instrumentation for both flavors.
 - Only the dependency and startup implementation differ. The upstream variant is a removal check,

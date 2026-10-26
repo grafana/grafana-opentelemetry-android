@@ -4,7 +4,7 @@ import kotlinx.validation.KotlinApiCompareTask
 
 plugins {
     alias(libs.plugins.android.library)
-    `maven-publish`
+    id("com.vanniktech.maven.publish.base")
 }
 
 android {
@@ -88,10 +88,30 @@ publishing {
     }
 }
 
+// Kotlin API documentation lives in the maintained module guide.
+val javadocJar by tasks.registering(Jar::class) {
+    archiveClassifier.set("javadoc")
+    from("README.md")
+}
+
+val centralPublishing = providers.gradleProperty("publishToCentral").orNull == "true"
+mavenPublishing {
+    if (centralPublishing) {
+        check(version.toString().matches(Regex("(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)"))) {
+            "Maven Central publishing requires a stable release version in version.txt"
+        }
+        publishToMavenCentral(automaticRelease = false)
+    }
+    if (centralPublishing || providers.gradleProperty("signPublication").orNull == "true") {
+        signAllPublications()
+    }
+}
+
 afterEvaluate {
     publishing.publications.create<MavenPublication>("release") {
         from(components["release"])
         artifactId = "android"
+        artifact(javadocJar)
         pom {
             name.set("Grafana OpenTelemetry Android")
             description.set("Grafana configuration for the upstream OpenTelemetry Android SDK")
@@ -100,6 +120,14 @@ afterEvaluate {
                 license {
                     name.set("Apache License, Version 2.0")
                     url.set("https://www.apache.org/licenses/LICENSE-2.0.txt")
+                }
+            }
+            developers {
+                developer {
+                    id.set("mobile-o11y-engineers")
+                    name.set("Grafana Mobile Observability")
+                    organization.set("Grafana Labs")
+                    organizationUrl.set("https://grafana.com")
                 }
             }
             scm {

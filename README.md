@@ -41,7 +41,7 @@ Automatic OkHttp instrumentation is configured by the application, not this libr
 ## Build and Test
 
 Use JDK 17, Android SDK Platform 37.0 and Build Tools 37.0.0. Set `ANDROID_HOME` to your SDK.
-The wrapper uses Gradle 9.3.1 and the build uses AGP 9.1.1 with Kotlin 2.3.10.
+The wrapper uses Gradle 9.3.1 and the build uses AGP 9.1.1 with Kotlin 2.4.20.
 
 ```sh
 ./gradlew :android:check :android:assembleDebug :android:assembleRelease
@@ -51,7 +51,7 @@ The wrapper uses Gradle 9.3.1 and the build uses AGP 9.1.1 with Kotlin 2.3.10.
   lintGrafanaDebug lintUpstreamDebug
 ```
 
-The publication task writes AAR, source JAR, POM and Gradle metadata to `build/test-repository`.
+The publication task writes AAR, source/documentation JARs, POM and Gradle metadata to `build/test-repository`.
 The [consumer](consumer/README.md) is a separate Gradle build. It resolves that Maven artifact,
 not a project dependency or included build. Its upstream-only flavor uses the same application
 instrumentation without a dependency on the Grafana layer.
@@ -65,13 +65,14 @@ baseline automatically. This initial snapshot is not a promise of stable APIs be
 ## Before a Release
 
 - Confirm Maven namespace ownership, signing and CI publishing access.
-- Agree the first release version, ownership and release workflow.
+- Agree the first release version and enable the reviewed release workflow.
 - Validate the packaged consumer against Faro ingest and connected backend traces.
 - Verify removal of the Grafana layer in that same environment.
 - Cover supported Android API levels and at least one physical device.
 
 Local builds, unit tests and the consumer smoke test do not establish Grafana Cloud ingestion or
-production readiness. No publishing credentials or remote release workflow are included here.
+production readiness. See [release setup and validation](docs/releasing.md) for the disabled-by-default
+automation and remaining access requirements. No publishing credentials are included here.
 
 ## License
 
