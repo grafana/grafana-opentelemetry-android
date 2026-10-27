@@ -1,13 +1,21 @@
-# Android session integration (draft)
+# Android session integration test probe
 
-This is a standalone experiment, not part of the package build or publication.
+**Testing only. Do not merge this branch or PR into `main`.**
+
+The `varanha/android-session-integration-draft` branch and
+[PR #16](https://github.com/grafana/grafana-opentelemetry-android/pull/16)
+keep the code, probe and review discussion together for
+[#57](https://github.com/grafana/frontend-o11y-knowledge-workbench/issues/57).
+The package integration will be a separate PR under `android/` once the required
+upstream APIs are released. This probe is not intended to ship with it.
+
+This is a standalone build, not part of the package build or publication.
 It compiles the real Grafana initializer with session persistence and manual
 reset. The normal package's OTel 1.7.0 dependency and public API are unchanged.
 
-Keep the code and probe on this draft branch until the upstream APIs are
-released. The design notes, gap list and dated evidence are maintained separately
-in the team workbench. This directory keeps the instructions needed to rebuild
-and run the probe.
+The session guide is proposed in
+[workbench PR #164](https://github.com/grafana/frontend-o11y-knowledge-workbench/pull/164).
+This directory keeps the instructions needed to rebuild and run the probe.
 
 ## Upstream status
 
