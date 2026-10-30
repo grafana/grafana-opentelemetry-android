@@ -48,10 +48,10 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.17")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
-    implementation(platform("io.opentelemetry.android:opentelemetry-android-bom:1.8.0-session57-draft-alpha-SNAPSHOT"))
-    implementation("io.opentelemetry.android:android-agent:1.8.0-session57-draft-SNAPSHOT")
-    implementation("io.opentelemetry.android:session:1.8.0-session57-draft-SNAPSHOT")
+    implementation(platform("io.opentelemetry.android:opentelemetry-android-bom:1.9.0-session57-e13e9d89-alpha-SNAPSHOT"))
+    implementation("io.opentelemetry.android:android-agent:1.9.0-session57-e13e9d89-SNAPSHOT")
+    implementation("io.opentelemetry.android:session:1.9.0-session57-e13e9d89-SNAPSHOT")
     if (!disableNativeCrash) {
-        implementation("io.opentelemetry.android.instrumentation:native-crash:1.8.0-session57-draft-alpha-SNAPSHOT")
+        implementation("io.opentelemetry.android.instrumentation:native-crash:1.9.0-session57-e13e9d89-alpha-SNAPSHOT")
     }
 }

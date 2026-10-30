@@ -493,6 +493,59 @@ class DraftSessionIntegrationTest {
         }
     }
 
+    @Test fun `observer failure propagates after reset without silently retrying`() {
+        val failure = IllegalStateException("observer failed")
+        var fail = false
+        var calls = 0
+        val observer =
+            object : SessionObserver {
+                override fun onSessionStarted(
+                    newSession: Session,
+                    previousSession: Session,
+                ) {
+                    calls++
+                    if (fail) throw failure
+                }
+
+                override fun onSessionEnded(session: Session) = Unit
+            }
+        Receiver().use { receiver ->
+            val runtime =
+                DraftSessionInstaller().initialize(temporary.root, "app") { configure ->
+                    initializeIsolated(receiver.configuration) {
+                        configure()
+                        session { observers(observer) }
+                    }
+                }
+            try {
+                val original = runtime.rum.sessionProvider.getSessionId()
+                val callsBeforeReset = calls
+                fail = true
+                assertSame(failure, assertThrows(IllegalStateException::class.java) { runtime.startNewSession() })
+                val replacement = runtime.rum.sessionProvider.getSessionId()
+                assertNotEquals(original, replacement)
+                assertEquals(callsBeforeReset + 1, calls)
+                assertEquals(replacement, runtime.rum.sessionProvider.getSessionId())
+                assertEquals(callsBeforeReset + 1, calls)
+
+                fail = false
+                assertTrue(runtime.startNewSession())
+                assertNotEquals(replacement, runtime.rum.sessionProvider.getSessionId())
+                assertEquals(callsBeforeReset + 2, calls)
+            } finally {
+                runtime.close()
+            }
+        }
+    }
+
+    @Test fun `reset rejects a runtime without the incubating agent API`() {
+        val rum = mockk<OpenTelemetryRum>(relaxed = true)
+        DraftSessionRuntime(rum, ColdStartSessions(temporary.root, "app")).use { runtime ->
+            val failure = assertThrows(IllegalStateException::class.java) { runtime.startNewSession() }
+            assertTrue(failure.message!!.contains("incubating RUM"))
+        }
+    }
+
     @Test fun `initialization failure releases the writer and does not retry setup`() {
         val installer = DraftSessionInstaller()
         var configured = false

@@ -13,31 +13,34 @@ This is a standalone build, not part of the package build or publication.
 It compiles the real Grafana initializer with session persistence and manual
 reset. The normal package's OTel 1.7.0 dependency and public API are unchanged.
 
-The session guide is proposed in
-[workbench PR #164](https://github.com/grafana/frontend-o11y-knowledge-workbench/pull/164).
+Session setup and private-preview scope are documented separately.
 This directory keeps the instructions needed to rebuild and run the probe.
 
 ## Upstream status
 
 The previous-session getter from
 [#2126](https://github.com/open-telemetry/opentelemetry-android/pull/2126) is merged.
-Manual reset in [#2141](https://github.com/open-telemetry/opentelemetry-android/pull/2141)
-depends on [#2145](https://github.com/open-telemetry/opentelemetry-android/pull/2145).
-The reset method's Boolean result is still under discussion.
+Manual reset [#2141](https://github.com/open-telemetry/opentelemetry-android/pull/2141)
+is merged. The initializer still declares `OpenTelemetryRum` as its return type;
+its returned object implements `IncubatingOpenTelemetryRum`, which provides
+`startNewSession()`. The extension approach in
+[#2145](https://github.com/open-telemetry/opentelemetry-android/pull/2145) was dropped.
+
+A reset returns `false` while another transition is active; it is not queued.
+Storage or observer exceptions propagate after the in-memory session changes,
+so an exception does not mean the original session remains active. This probe
+does not automatically retry either result and uses the initializer-owned session
+provider, not a custom provider. Stop callers before shutdown.
 
 ## Pins
 
 Grafana package base: `eecda6a`.
 
-- Upstream main: `0a44a34e8344ccc406379e6d3946bf048ba83199`.
-- Extension API: `4614d37626b7fef1daa83e6fb0ecfbff2bc4405d`.
-- Manual reset patch: `5882e8a25391727fe79f07276b548c825093ead4`.
-- Local rebased reset: `7b30067f034e837baf7c01290786522423d9f7f8`.
-- Local combined commit: `fec939a147047e34f3be70d6e961d39baf034ff5`.
-- Reproducible source tree: `5cdd3e2462e8dd92ef520e2debc908e194a21d3f`.
+- Upstream merged source: `e13e9d8967e02accb3d47a43c8e0ea636876f4a1`.
+- Manual reset merge: `cc2c7d504a093fb0c637b0ab6f01473e921e6744`.
+- Source tree: `a63bfb88a586345185a68bf2505ffcc96c990fe8`.
 
-The rebased and combined commits are local only. The commands below reproduce
-their source tree from published commits. No extra upstream test patch is needed.
+No unmerged upstream patches are needed. This pin is not a released SDK.
 Do not use moving branch heads or count earlier prototype results as validation
 of this combination.
 
@@ -50,18 +53,15 @@ upstream checkout; the example directory must not already exist:
 export DRAFT="$PWD/session-integration"
 git clone https://github.com/open-telemetry/opentelemetry-android.git ../android-session-upstream-draft
 export UPSTREAM="$(cd ../android-session-upstream-draft && pwd)"
-git -C "$UPSTREAM" fetch origin 0a44a34e8344ccc406379e6d3946bf048ba83199 4614d37626b7fef1daa83e6fb0ecfbff2bc4405d 5882e8a25391727fe79f07276b548c825093ead4
-git -C "$UPSTREAM" switch -c varanha/session-integration-local-base 4614d37626b7fef1daa83e6fb0ecfbff2bc4405d
-git -C "$UPSTREAM" cherry-pick 5882e8a25391727fe79f07276b548c825093ead4
-git -C "$UPSTREAM" merge --no-edit --no-ff 0a44a34e8344ccc406379e6d3946bf048ba83199
-test "$(git -C "$UPSTREAM" rev-parse 'HEAD^{tree}')" = 5cdd3e2462e8dd92ef520e2debc908e194a21d3f
+git -C "$UPSTREAM" checkout --detach e13e9d8967e02accb3d47a43c8e0ea636876f4a1
+test "$(git -C "$UPSTREAM" rev-parse 'HEAD^{tree}')" = a63bfb88a586345185a68bf2505ffcc96c990fe8
 env -u CI "$UPSTREAM/gradlew" -p "$UPSTREAM" publishToMavenLocal \
-  -Pversion=1.8.0-session57-draft \
+  -Pversion=1.9.0-session57-e13e9d89 \
   -Dmaven.repo.local="$DRAFT/build/upstream-repository" \
   --max-workers=2 --no-configuration-cache
 "$UPSTREAM/gradlew" -p "$DRAFT" check assembleDebug assembleRelease koverXmlReport \
   :probe:assembleDebug :probe:assembleRelease --max-workers=2 --refresh-dependencies
-"$UPSTREAM/gradlew" -p "$UPSTREAM" check koverXmlReport --max-workers=2 --no-configuration-cache
+"$UPSTREAM/gradlew" -p "$UPSTREAM" check koverXmlReport --max-workers=1 --no-configuration-cache
 ```
 
 Only the isolated local Maven directory can supply Android OTel dependencies.
@@ -75,6 +75,18 @@ span attribution and logs with an explicit historical ID. Clock-driven tests
 check the background timeout and maximum lifetime, not real-time waits.
 File tests include malformed data, atomic-file recovery, asynchronous write
 failure and competing owners. None sends data to Grafana Cloud.
+
+## October 30 validation
+
+The pins above passed 91 JVM tests, lint, formatting, coverage checks and
+Debug/Release builds. The R8 Release probe passed all eight scenarios on
+arm64 API 23 and 35 emulators, including write failures, process isolation,
+buffered replay and native `abort()` replay under the crashed session.
+
+The pinned upstream's full check passed locally with one worker. Its first
+two-worker run failed a `forceFlush` assertion in `DynamicHeadersExportTest`; that test then passed
+in isolation. The failure's cause is not established. These results do not cover
+full-duration timeouts, physical devices or hosted ingestion.
 
 ## Probe and limits
 

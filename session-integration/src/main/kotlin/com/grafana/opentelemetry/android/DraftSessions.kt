@@ -2,8 +2,8 @@ package com.grafana.opentelemetry.android
 
 import android.app.Application
 import io.opentelemetry.android.Incubating
+import io.opentelemetry.android.IncubatingOpenTelemetryRum
 import io.opentelemetry.android.OpenTelemetryRum
-import io.opentelemetry.android.agent.session.SessionExtension
 import io.opentelemetry.sdk.trace.samplers.Sampler
 import java.io.Closeable
 import java.io.File
@@ -92,11 +92,11 @@ internal class DraftSessionRuntime(
 
     val storageFailure: String? get() = storage.failure
 
-    /** The Boolean result is still under discussion upstream; false is not queued. */
+    /** False means another transition is active; the request is not queued or retried. */
     fun startNewSession(): Boolean {
         check(!closed) { "Restart the process after shutdown" }
-        return checkNotNull(rum.getExtension(SessionExtension::class.java)) {
-            "This draft requires the upstream SessionExtension"
+        return checkNotNull(rum as? IncubatingOpenTelemetryRum) {
+            "This probe requires the incubating RUM returned by the Android agent initializer"
         }.startNewSession()
     }
 
