@@ -1,0 +1,11 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <application android:name=".ProbeApplication" android:label="Session Draft Probe"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:allowBackup="false" android:usesCleartextTraffic="true">
+        <activity android:name=".ProbeActivity" android:exported="true" />
+        <activity android:name=".WorkerActivity" android:process=":worker" android:exported="true" />
+        <activity android:name=".ContenderActivity" android:process=":contender" android:exported="true" />
+    </application>
+</manifest>
