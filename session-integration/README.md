@@ -116,3 +116,8 @@ The [November 2 real-time probe run](probe/validation/2026-11-02-real-time-timeo
 covers the background timeout, foreground-idle control and full four-hour lifetime
 on an API 35 arm64 emulator. Final validation must still use the supported package.
 Physical-device storage/startup cost and hosted ingestion/UI remain separate.
+
+The [release checklist](probe/validation/release-checklist.md) maps the remaining
+checks to #57 and describes the package and hosted runs still needed. The
+[startup comparison](probe/README.md#startup-comparison) prepares an in-memory
+control without changing the package or sending hosted telemetry.

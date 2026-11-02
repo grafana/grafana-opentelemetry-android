@@ -14,24 +14,35 @@ import android.widget.TextView
 import com.grafana.opentelemetry.android.ColdStartSessions
 import com.grafana.opentelemetry.android.DraftSessionRuntime
 import com.grafana.opentelemetry.android.DraftSessions
+import com.grafana.opentelemetry.android.ExperimentalGrafanaOtelApi
+import com.grafana.opentelemetry.android.GrafanaOtel
 import com.grafana.opentelemetry.android.GrafanaOtelConfiguration
+import com.grafana.opentelemetry.android.configureSessionProcess
+import io.opentelemetry.android.Incubating
+import io.opentelemetry.android.OpenTelemetryRum
 import io.opentelemetry.api.common.Attributes
 import io.opentelemetry.api.trace.Span
 import io.opentelemetry.api.trace.SpanContext
 import io.opentelemetry.api.trace.TraceFlags
 import io.opentelemetry.api.trace.TraceState
 import io.opentelemetry.context.Context
+import io.opentelemetry.sdk.trace.samplers.Sampler
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 import android.content.Context as AndroidContext
 
+@OptIn(ExperimentalGrafanaOtelApi::class, Incubating::class)
 class ProbeApplication : Application() {
     internal lateinit var runtime: DraftSessionRuntime
+    private lateinit var baselineRum: OpenTelemetryRum
+    private val rum: OpenTelemetryRum get() = if (::baselineRum.isInitialized) baselineRum else runtime.rum
     lateinit var process: String
     lateinit var report: JSONObject
-    val hasRuntime: Boolean get() = ::runtime.isInitialized
+    val hasRuntime: Boolean get() = ::runtime.isInitialized || ::baselineRum.isInitialized
+    val storageFailure: String? get() = if (::runtime.isInitialized) runtime.storageFailure else null
+    internal val startupBaseline: Boolean get() = File(filesDir, "startup-baseline").exists()
     val realTimeEnabled: Boolean get() = File(filesDir, "realtime").exists()
     internal val collectorEndpoint: String
         get() = if (File(filesDir, "physical-device").exists()) "http://127.0.0.1:14318" else "http://10.0.2.2:14318"
@@ -56,48 +67,60 @@ class ProbeApplication : Application() {
             }
         } else {
             val buffered = File(filesDir, "buffered").exists()
-            val setupStarted = SystemClock.elapsedRealtimeNanos()
-            runtime =
-                DraftSessions.initialize(
-                    this,
-                    GrafanaOtelConfiguration(
-                        otlpEndpoint = collectorEndpoint,
-                        serviceName = "local-session-draft-probe",
-                        diskBufferingEnabled = buffered,
-                        resourceAttributes =
-                            Attributes
-                                .builder()
-                                .put("probe.process", process)
-                                .put("probe.pid", Process.myPid().toLong())
-                                .put("probe.launch", report.getString("launch"))
-                                .build(),
-                    ),
-                    process,
+            val baseline = startupBaseline
+            check(!baseline || (!buffered && !realTimeEnabled)) { "Startup control cannot run timeout or buffering tests" }
+            val configuration =
+                GrafanaOtelConfiguration(
+                    otlpEndpoint = collectorEndpoint,
+                    serviceName = "local-session-draft-probe",
+                    diskBufferingEnabled = buffered,
+                    resourceAttributes =
+                        Attributes
+                            .builder()
+                            .put("probe.process", process)
+                            .put("probe.pid", Process.myPid().toLong())
+                            .put("probe.launch", report.getString("launch"))
+                            .build(),
                 )
+            val setupStarted = SystemClock.elapsedRealtimeNanos()
+            if (baseline) {
+                // Match the draft configuration, changing only the persistence installation.
+                baselineRum =
+                    GrafanaOtel.initialize(this, configuration) {
+                        sdkConfiguration.sampler { trace { Sampler.alwaysOn() } }
+                        configureSessionProcess(this@ProbeApplication, process)
+                    }
+            } else {
+                runtime = DraftSessions.initialize(this, configuration, process)
+            }
             report.put("setupNanos", SystemClock.elapsedRealtimeNanos() - setupStarted)
-            val session = runtime.rum.sessionProvider.getSessionId()
-            runtime.rum.emitEvent("probe.early-startup")
-            runtime.rum.openTelemetry
+            report.put("persistenceEnabled", !baseline)
+            val session = rum.sessionProvider.getSessionId()
+            rum.emitEvent("probe.early-startup")
+            rum.openTelemetry
                 .getTracer("probe")
                 .spanBuilder("probe.early-startup")
                 .startSpan()
                 .end()
-            report.put("session", session).put("storageFailure", runtime.storageFailure ?: "")
+            report.put("session", session).put("storageFailure", storageFailure ?: "")
             checkSampling("startup")
             // A rejected duplicate must not release the live owner's kernel lock.
-            ColdStartSessions(File(noBackupFilesDir, "grafana-sessions"), process).use {
-                report.put("duplicateFailure", it.failure ?: "")
+            if (!baseline) {
+                ColdStartSessions(File(noBackupFilesDir, "grafana-sessions"), process).use {
+                    report.put("duplicateFailure", it.failure ?: "")
+                }
             }
         }
         saveReport()
     }
 
     fun saveReport() {
-        if (hasRuntime) report.put("storageFailure", runtime.storageFailure ?: "")
+        if (hasRuntime) report.put("storageFailure", storageFailure ?: "")
         File(filesDir, "report-${process.substringAfter(':', "main")}.json").writeText(report.toString())
     }
 
     fun reset() {
+        check(!::baselineRum.isInitialized) { "Startup control does not exercise reset" }
         val before = runtime.rum.sessionProvider.getSessionId()
         val span =
             runtime.rum.openTelemetry
@@ -130,8 +153,8 @@ class ProbeApplication : Application() {
         val before = SystemClock.elapsedRealtime()
         val session = runtime.rum.sessionProvider.getSessionId()
         val name = "probe.realtime.$token"
-        runtime.rum.emitEvent(name)
-        runtime.rum.openTelemetry
+        rum.emitEvent(name)
+        rum.openTelemetry
             .getTracer("probe")
             .spanBuilder(name)
             .startSpan()
@@ -165,13 +188,13 @@ class ProbeApplication : Application() {
         for ((name, parent) in parents) {
             val label = "probe.sampling.$phase.$name"
             val span =
-                runtime.rum.openTelemetry
+                rum.openTelemetry
                     .getTracer("probe")
                     .spanBuilder(label)
                     .setParent(parent)
                     .startSpan()
             try {
-                runtime.rum.openTelemetry.logsBridge
+                rum.openTelemetry.logsBridge
                     .get("probe")
                     .logRecordBuilder()
                     .setContext(parent.with(span))
@@ -181,7 +204,7 @@ class ProbeApplication : Application() {
                 span.end()
             }
         }
-        runtime.rum.openTelemetry
+        rum.openTelemetry
             .getMeter("probe")
             .counterBuilder("probe.sampling.counter")
             .build()
@@ -195,7 +218,7 @@ open class ProbeActivity : Activity() {
         object : Runnable {
             override fun run() {
                 val app = application as ProbeApplication
-                if (app.hasRuntime && app.report.optString("storageFailure") != (app.runtime.storageFailure ?: "")) {
+                if (app.hasRuntime && app.report.optString("storageFailure") != (app.storageFailure ?: "")) {
                     app.saveReport()
                 }
                 reporter.postDelayed(this, 200)

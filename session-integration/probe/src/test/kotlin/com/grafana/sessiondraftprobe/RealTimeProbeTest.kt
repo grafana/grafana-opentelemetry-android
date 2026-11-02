@@ -19,6 +19,24 @@ import java.io.File
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [23, 35], application = Application::class)
 class RealTimeProbeTest {
+    @Test fun `startup control requires an explicit marker and has no runtime before setup`() {
+        val context = RuntimeEnvironment.getApplication()
+        val app = ProbeApplication()
+        ReflectionHelpers.callInstanceMethod<Void>(app, "attachBaseContext", ClassParameter.from(Context::class.java, context))
+        val marker = File(context.filesDir, "startup-baseline")
+        marker.delete()
+        try {
+            assertFalse(app.startupBaseline)
+            assertFalse(app.hasRuntime)
+            marker.writeText("yes")
+            assertTrue(app.startupBaseline)
+            assertFalse(app.hasRuntime)
+            assertEquals(null, app.storageFailure)
+        } finally {
+            marker.delete()
+        }
+    }
+
     @Test fun `physical device marker selects only the USB loopback collector`() {
         val context = RuntimeEnvironment.getApplication()
         val app = ProbeApplication()

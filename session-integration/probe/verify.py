@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import shlex
+import statistics
 import subprocess
 import threading
 import time
@@ -38,6 +39,53 @@ def verify_device_mode(serial, physical_device, root_files, real_time, crash_mod
 def reverse_port_available(listing):
     return not any(len(parts := line.split()) >= 3 and parts[1] == "tcp:14318"
                    for line in listing.splitlines())
+
+
+def startup_order(pair):
+    return (False, True) if pair % 2 == 0 else (True, False)
+
+
+def verify_startup_sample(current, persistence, previous_id, expected_previous, before, after):
+    assert current["persistenceEnabled"] is persistence, current
+    assert not current.get("storageFailure"), current
+    assert current["setupNanos"] > 0, current
+    assert current["session"] and current["session"] != expected_previous, current
+    assert previous_id == (expected_previous if persistence else None), (previous_id, expected_previous)
+    if expected_previous is None:
+        assert before == b"", "The first persistence launch must start without history"
+    else:
+        assert json.loads(before)["id"] == expected_previous
+    if persistence:
+        assert json.loads(after)["id"] == current["session"]
+    else:
+        assert before == after, "The no-persistence control changed durable session history"
+        assert json.loads(after)["id"] == expected_previous
+    match = re.search(r"^TotalTime: (\d+)\r?$", current["activityStart"], re.MULTILINE)
+    assert match and int(match.group(1)) > 0, current["activityStart"]
+    return {"persistenceEnabled": persistence, "setupMs": current["setupNanos"] / 1_000_000,
+            "activityTotalMs": int(match.group(1)), "recordBytes": len(after),
+            "launch": current}
+
+
+def startup_summary(samples, pairs):
+    assert len(samples) == pairs * 2 and pairs >= 2
+    for pair in range(pairs):
+        assert tuple(s["persistenceEnabled"] for s in samples[pair * 2:pair * 2 + 2]) == startup_order(pair)
+    def distribution(values):
+        return dict(min=min(values), median=statistics.median(values), max=max(values))
+    summary = {"pairs": pairs, "performanceVerdict": "not assessed",
+               "limits": "Whole SDK initialization; warm filesystem, no threshold, not isolated disk cost. "
+                         "ActivityManager times include a persistence-only duplicate-owner probe check; "
+                         "they are not a clean persistence-versus-control comparison."}
+    for persistence, name in ((False, "control"), (True, "persistence")):
+        rows = [s for s in samples if s["persistenceEnabled"] is persistence]
+        summary[name] = {key: distribution([s[key] for s in rows]) for key in ("setupMs", "activityTotalMs")}
+    deltas = []
+    for pair in range(pairs):
+        rows = {s["persistenceEnabled"]: s for s in samples[pair * 2:pair * 2 + 2]}
+        deltas.append(rows[True]["setupMs"] - rows[False]["setupMs"])
+    summary["pairedSetupDeltaMs"] = distribution(deltas)
+    return summary
 
 
 def value(item):
@@ -182,6 +230,8 @@ def main():
     parser.add_argument("--apk", required=True, help="Exact installed probe APK")
     parser.add_argument("--physical-device", action="store_true", help="Opt in to Debug probe checks on a phone using USB loopback forwarding")
     parser.add_argument("--startup-runs", type=int, default=0, help="Run this many cold launches instead of regression scenarios (maximum 20)")
+    parser.add_argument("--startup-comparison-pairs", type=int, default=0,
+                        help="Compare persistence on/off in alternating order (2-20 pairs, plus two warmups)")
     parser.add_argument("--root-files", action="store_true", help="Use a rooted disposable emulator for a non-debuggable APK")
     parser.add_argument("--crash-only", action="store_true")
     parser.add_argument("--real-time", action="store_true", help="Run actual 14/16-minute background waits and a four-hour foreground lifetime")
@@ -194,13 +244,17 @@ def main():
         parser.error("--real-time cannot be combined with crash comparison modes")
     if not 0 <= args.startup_runs <= 20 or (args.startup_runs and (args.real_time or args.crash_only or args.without_native_capture)):
         parser.error("--startup-runs must be 0-20 and cannot be combined with timeout/crash modes")
+    if args.startup_comparison_pairs and (not 2 <= args.startup_comparison_pairs <= 20 or
+            args.startup_runs or args.real_time or args.crash_only or args.without_native_capture):
+        parser.error("--startup-comparison-pairs must be 2-20 and cannot be combined with other scenario modes")
     verify_device_mode(args.serial, args.physical_device, args.root_files, args.real_time, args.crash_mode)
     evidence = Path(args.evidence)
     evidence.mkdir(parents=True, exist_ok=False)
 
-    def adb(*command):
-        return subprocess.run([args.adb, "-s", args.serial, *command], check=True,
-                              timeout=45, capture_output=True).stdout.decode().strip()
+    def adb(*command, raw=False):
+        output = subprocess.run([args.adb, "-s", args.serial, *command], check=True,
+                                timeout=45, capture_output=True).stdout
+        return output if raw else output.decode().strip()
 
     def shell(command):
         if args.root_files:
@@ -242,6 +296,9 @@ def main():
         verify_sampling([r for r in snapshot() if r["resource"].get("probe.launch") == current["launch"]], phase, session)
 
     def launch(role="main", reset=False, crash=False, telemetry=True):
+        if args.root_files:
+            # su sets the UID, not the app's SELinux category on older emulators.
+            adb("shell", "restorecon", "-D", "-F", "-R", "/data/data/" + PACKAGE)
         token = str(time.monotonic_ns())
         activity = {"main": "ProbeActivity", "worker": "WorkerActivity", "contender": "ContenderActivity"}[role]
         cmd = ["shell", "am", "start", "-W", "-f", "0x10008000", "-n", PACKAGE + "/." + activity,
@@ -270,7 +327,11 @@ def main():
             check_sampling(current, "startup", events(current, "probe.early-startup")[0]["attrs"]["session.id"])
             if reset:
                 check_sampling(current, "after-reset", current["session"])
-            assert current["duplicateFailure"] == "storage-unavailable"
+            if current["persistenceEnabled"]:
+                assert current["duplicateFailure"] == "storage-unavailable"
+            else:
+                assert args.startup_comparison_pairs, "Unexpected no-persistence control"
+                assert "duplicateFailure" not in current
         return current
 
     def record_path(role="main"):
@@ -300,6 +361,49 @@ def main():
         results.append(dict(test=name, status="passed", **details))
         (evidence / "results.json").write_text(json.dumps(results, indent=2))
         print("PASS " + name, flush=True)
+
+    def startup_comparison():
+        shell("mkdir -p files")
+        samples, observations = [], []
+        seen_sessions = set()
+        last, last_pid = None, None
+
+        def record_bytes():
+            if shell("if test -f " + record_path() + "; then echo yes; fi") != "yes":
+                return b""
+            reader = ["cat"] if args.root_files else ["run-as", PACKAGE, "cat"]
+            return adb("exec-out", *reader, "/data/data/" + PACKAGE + "/" + record_path(), raw=True)
+
+        # Seed history and warm both paths, then counterbalance their order in each pair.
+        for pair in range(-1, args.startup_comparison_pairs):
+            for persistence in startup_order(pair):
+                stop()
+                if persistence:
+                    shell("rm -f files/startup-baseline")
+                else:
+                    write("files/startup-baseline", "yes")
+                before = record_bytes()
+                current = launch()
+                observations.append(dict(pair=pair, launch=current))
+                (evidence / "startup-observations.json").write_text(json.dumps(observations, indent=2))
+                assert current["pid"] != last_pid, "Startup comparison reused a process"
+                assert current["session"] not in seen_sessions, "Startup comparison reused a session"
+                seen_sessions.add(current["session"])
+                if persistence:
+                    wait_stored(current)
+                after = record_bytes()
+                sample = verify_startup_sample(current, persistence, previous(current), last, before, after)
+                if persistence:
+                    assert current["session"] != last
+                    last = current["session"]
+                last_pid = current["pid"]
+                if pair >= 0:
+                    samples.append(sample)
+                    (evidence / "startup-samples.json").write_text(json.dumps(samples, indent=2))
+                stop()
+        summary = startup_summary(samples, args.startup_comparison_pairs)
+        (evidence / "startup-summary.json").write_text(json.dumps(summary, indent=2))
+        passed("startup comparison attribution and storage isolation", pairs=args.startup_comparison_pairs)
 
     def real_time_check():
         shell("mkdir -p files")
@@ -478,6 +582,7 @@ def main():
                        "rootFiles": args.root_files, "crashOnly": args.crash_only,
                        "realTime": args.real_time,
                        "physicalDevice": args.physical_device, "startupRuns": args.startup_runs,
+                       "startupComparisonPairs": args.startup_comparison_pairs,
                        "crashMode": args.crash_mode,
                        "withoutNativeCapture": args.without_native_capture,
                        "package": adb("shell", "dumpsys", "package", PACKAGE)}
@@ -511,6 +616,9 @@ def main():
         if args.physical_device:
             shell("mkdir -p files")
             write("files/physical-device", "yes")
+        if args.startup_comparison_pairs:
+            startup_comparison()
+            return
         if args.startup_runs:
             last = None
             for index in range(args.startup_runs):

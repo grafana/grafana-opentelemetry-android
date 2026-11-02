@@ -137,6 +137,53 @@ test or establish R8 Release, hosted UI, battery or Doze behavior.
 The [November 2 Pixel 7 results](validation/2026-11-02-pixel7.md) record the
 Debug regression pass, cold-launch observations and remaining limits.
 
+## Startup comparison
+
+Use `--startup-comparison-pairs 10` instead of `--startup-runs` to compare
+the session persistence integration with an in-memory control in the same APK.
+It runs two unmeasured warmups, then ten pairs of fresh processes, alternating
+which mode runs first. Both paths use the same Grafana initializer, endpoint,
+instrumentations, always-on trace sampler and disabled metrics. Disk buffering
+is off. Only the draft persistence installation is omitted in the control.
+
+```sh
+/tmp/session57-probe-python/bin/python session-integration/probe/verify.py \
+  --adb "$ANDROID_HOME/platform-tools/adb" --serial "$SERIAL" \
+  --apk session-integration/probe/build/outputs/apk/release/probe-release.apk \
+  --root-files --startup-comparison-pairs 10 \
+  --evidence session-integration/build/evidence/new-startup-comparison
+```
+
+Install that APK on a rooted disposable emulator first, as described above.
+Root-file mode restores this test app's SELinux labels before launches because
+older emulators do not preserve the app category for files created through `su`.
+SELinux remains enforced; the phone path does not use this operation.
+On a phone, use the Debug APK with `--physical-device` instead of `--root-files`.
+The control is test-only; it does not change package defaults. It must produce
+unlinked new sessions, preserve the durable record byte-for-byte and retain all
+five sampling cases. Persistence launches must link to the last durable session,
+not a control session. Every launch must have a new PID and no storage error.
+
+`startup-observations.json` retains reports, including warmups. Measured pairs
+are in `startup-samples.json`; `startup-summary.json` reports min/median/max
+and paired SDK-setup deltas. Failures keep partial evidence and normal cleanup.
+A passed result means the comparison behaved correctly, not that performance
+is acceptable. There is no invented pass threshold.
+
+The SDK timer starts immediately before initialization, after configuration is
+constructed, and stops when initialization returns. It does not wait for the
+asynchronous write; durable history is checked separately. ActivityManager
+times include probe UI and a duplicate-owner check that runs only with persistence.
+They are not a clean A/B measure. The SDK timer excludes that check. It now also
+excludes configuration construction, unlike the earlier Pixel 7 observations;
+do not compare those timings directly. These are warm-filesystem measurements,
+not isolated disk latency, app launch benchmarks or battery tests.
+Debug phone results with Vysor/PiP running cannot establish production overhead.
+The [release checklist](validation/release-checklist.md) separates this preparation
+from final supported-package and hosted validation.
+The [November 2 preparation results](validation/2026-11-02-release-preparation.md)
+record the emulator comparisons, regression runs and minimum-API harness fixes.
+
 ## Real-time timeout checks
 
 Add `--real-time` to the driver command for a separate run lasting about four

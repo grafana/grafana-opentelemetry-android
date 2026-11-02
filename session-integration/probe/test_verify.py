@@ -1,7 +1,87 @@
 import copy
+import contextlib
+import io
+import json
 import unittest
+from unittest.mock import patch
 
-from verify import reverse_port_available, sampling_names, verify_checkpoint, verify_device_mode, verify_elapsed, verify_identity, verify_sampling
+from verify import main, reverse_port_available, sampling_names, startup_order, startup_summary, verify_checkpoint, verify_device_mode, verify_elapsed, verify_identity, verify_sampling, verify_startup_sample
+
+
+class StartupComparisonTest(unittest.TestCase):
+    def setUp(self):
+        self.current = dict(persistenceEnabled=True, setupNanos=12_000_000, session="new",
+                            storageFailure="", activityStart="Status: ok\nTotalTime: 150\nComplete")
+        self.before = json.dumps(dict(id="old")).encode()
+        self.after = json.dumps(dict(id="new")).encode()
+
+    def test_persistence_checks_written_record_and_predecessor(self):
+        sample = verify_startup_sample(self.current, True, "old", "old", self.before, self.after)
+        self.assertEqual(12, sample["setupMs"])
+        self.assertEqual(150, sample["activityTotalMs"])
+
+    def test_activity_timing_accepts_older_adb_line_endings(self):
+        current = dict(self.current, activityStart="Status: ok\r\nTotalTime: 150\r\nComplete")
+        sample = verify_startup_sample(current, True, "old", "old", self.before, self.after)
+        self.assertEqual(150, sample["activityTotalMs"])
+
+    def test_first_persistence_launch_requires_empty_history(self):
+        verify_startup_sample(self.current, True, None, None, b"", self.after)
+        with self.assertRaises(AssertionError):
+            verify_startup_sample(self.current, True, None, None, self.before, self.after)
+
+    def test_control_rejects_matching_error_output_or_wrong_history(self):
+        current = dict(self.current, persistenceEnabled=False)
+        for record in (b"cat: Permission denied", b"", self.after):
+            with self.subTest(record=record), self.assertRaises((AssertionError, ValueError)):
+                verify_startup_sample(current, False, None, "old", record, record)
+
+    def test_control_preserves_history_without_linking_it(self):
+        current = dict(self.current, persistenceEnabled=False)
+        verify_startup_sample(current, False, None, "old", self.before, self.before)
+        for previous, after in (("old", self.before), (None, self.after), (None, b""),
+                                (None, self.before + b"\n")):
+            with self.subTest(previous=previous, after=after), self.assertRaises(AssertionError):
+                verify_startup_sample(current, False, previous, "old", self.before, after)
+
+    def test_rejects_wrong_mode_failure_missing_timing_or_stale_record(self):
+        for key, value in (("persistenceEnabled", False), ("storageFailure", "write-failed"),
+                           ("setupNanos", 0), ("session", "old"), ("session", ""),
+                           ("activityStart", "TotalTime: 0"),
+                           ("activityStart", "Warning: Activity not started")):
+            with self.subTest(key=key), self.assertRaises(AssertionError):
+                verify_startup_sample(dict(self.current, **{key: value}), True, "old", "old", self.before, self.after)
+        for previous, after in ((None, self.after), ("wrong", self.after), ("old", self.before)):
+            with self.subTest(previous=previous, after=after), self.assertRaises(AssertionError):
+                verify_startup_sample(self.current, True, previous, "old", self.before, after)
+
+    def test_alternating_pairs_report_distribution_without_performance_verdict(self):
+        self.assertEqual((True, False), startup_order(-1))
+        samples = [dict(persistenceEnabled=mode, setupMs=10 + 2 * mode, activityTotalMs=100 + mode)
+                   for pair in range(2) for mode in startup_order(pair)]
+        summary = startup_summary(samples, 2)
+        self.assertEqual("not assessed", summary["performanceVerdict"])
+        self.assertEqual(2, summary["pairedSetupDeltaMs"]["median"])
+        self.assertEqual(10, summary["control"]["setupMs"]["median"])
+        with self.assertRaises(AssertionError):
+            startup_summary(samples[:-1], 2)
+        with self.assertRaises(AssertionError):
+            startup_summary([samples[1], samples[0], *samples[2:]], 2)
+
+    def test_invalid_combinations_do_not_touch_adb(self):
+        base = ["verify.py", "--adb", "unused", "--serial", "emulator-5554", "--apk", "unused",
+                "--evidence", "unused"]
+        for extra in (("--startup-comparison-pairs", "1"), ("--startup-comparison-pairs", "21"),
+                      ("--startup-comparison-pairs", "-1"),
+                      ("--startup-comparison-pairs", "2", "--startup-runs", "1"),
+                      ("--startup-comparison-pairs", "2", "--real-time"),
+                      ("--startup-comparison-pairs", "2", "--crash-only"),
+                      ("--startup-comparison-pairs", "2", "--without-native-capture")):
+            with self.subTest(extra=extra), patch("sys.argv", base + list(extra)), patch("verify.subprocess.run") as run:
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                    main()
+                self.assertEqual(2, error.exception.code)
+                run.assert_not_called()
 
 
 class DeviceModeTest(unittest.TestCase):
