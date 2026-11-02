@@ -1,0 +1,3 @@
+# Local run output is retained without putting telemetry/logcat in a source diff.
+evidence/
+probe/.cxx/

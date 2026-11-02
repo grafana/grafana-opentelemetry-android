@@ -136,6 +136,10 @@ class GrafanaOtelUpstreamConfiguration private constructor(
 ) {
     private val resourceActions = mutableListOf<ResourceBuilder.() -> Unit>()
 
+    // Internal integrations can use newer DSL features without exposing them in the package API.
+    @get:JvmSynthetic
+    internal val sdkConfiguration: OpenTelemetryConfiguration get() = delegate
+
     var clock: Clock
         get() = delegate.clock
         set(value) {
