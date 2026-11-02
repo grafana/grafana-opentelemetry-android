@@ -19,6 +19,21 @@ import java.io.File
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [23, 35], application = Application::class)
 class RealTimeProbeTest {
+    @Test fun `physical device marker selects only the USB loopback collector`() {
+        val context = RuntimeEnvironment.getApplication()
+        val app = ProbeApplication()
+        ReflectionHelpers.callInstanceMethod<Void>(app, "attachBaseContext", ClassParameter.from(Context::class.java, context))
+        val marker = File(context.filesDir, "physical-device")
+        marker.delete()
+        try {
+            assertEquals("http://10.0.2.2:14318", app.collectorEndpoint)
+            marker.writeText("yes")
+            assertEquals("http://127.0.0.1:14318", app.collectorEndpoint)
+        } finally {
+            marker.delete()
+        }
+    }
+
     @Test fun `lifecycle recording requires the real-time marker`() {
         val context = RuntimeEnvironment.getApplication()
         val app = ProbeApplication()

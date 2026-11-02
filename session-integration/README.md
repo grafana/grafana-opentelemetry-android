@@ -91,12 +91,15 @@ full-duration timeouts, physical devices or hosted ingestion.
 ## Probe and limits
 
 Follow the [probe instructions](probe/README.md) for emulator setup, Release
-builds, failure injection and crash comparisons. Use a new evidence directory
-for every run and retain failed runs as well as passing ones.
+builds, explicit physical-device checks, failure injection and crash comparisons.
+Use a new evidence directory for every run and retain failed runs as well as
+passing ones.
 
 The repository's CI checks the normal package, not this standalone project.
 Run the standalone checks above separately. The probe uses a local OTLP receiver;
-it does not validate physical devices, hosted ingestion or the product UI.
+it does not validate hosted ingestion or the product UI. The
+[Pixel 7 evidence](probe/validation/2026-11-02-pixel7.md) covers the Debug probe
+only, not the supported package or production startup/storage cost.
 
 Persistence is process-specific. Native-crash capture stays main-process only.
 Saves are asynchronous; restart links use the last durable record, which may lag

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local emulator check. Clears only com.grafana.sessiondraftprobe's data."""
+"""Local session check. Clears only com.grafana.sessiondraftprobe's data."""
 
 import argparse
 import gzip
@@ -23,6 +23,21 @@ lock = threading.Lock()
 available = threading.Event()
 available.set()
 rejected = threading.Event()
+
+
+def verify_device_mode(serial, physical_device, root_files, real_time, crash_mode):
+    if physical_device:
+        assert not serial.startswith("emulator-"), "Physical-device mode requires a phone serial"
+        assert not root_files, "Physical-device mode never uses root"
+        assert not real_time, "The unattended four-hour driver is emulator-only"
+        assert crash_mode == "abort", "Only the bounded native abort fixture is supported on a phone"
+    else:
+        assert serial.startswith("emulator-"), "Use --physical-device explicitly for a phone"
+
+
+def reverse_port_available(listing):
+    return not any(len(parts := line.split()) >= 3 and parts[1] == "tcp:14318"
+                   for line in listing.splitlines())
 
 
 def value(item):
@@ -164,7 +179,9 @@ def main():
     parser.add_argument("--adb", required=True)
     parser.add_argument("--serial", required=True)
     parser.add_argument("--evidence", required=True)
-    parser.add_argument("--apk", required=True, help="Exact APK installed on the emulator")
+    parser.add_argument("--apk", required=True, help="Exact installed probe APK")
+    parser.add_argument("--physical-device", action="store_true", help="Opt in to Debug probe checks on a phone using USB loopback forwarding")
+    parser.add_argument("--startup-runs", type=int, default=0, help="Run this many cold launches instead of regression scenarios (maximum 20)")
     parser.add_argument("--root-files", action="store_true", help="Use a rooted disposable emulator for a non-debuggable APK")
     parser.add_argument("--crash-only", action="store_true")
     parser.add_argument("--real-time", action="store_true", help="Run actual 14/16-minute background waits and a four-hour foreground lifetime")
@@ -175,6 +192,9 @@ def main():
         parser.error("Assertions must be enabled; do not use python -O")
     if args.real_time and (args.crash_only or args.without_native_capture):
         parser.error("--real-time cannot be combined with crash comparison modes")
+    if not 0 <= args.startup_runs <= 20 or (args.startup_runs and (args.real_time or args.crash_only or args.without_native_capture)):
+        parser.error("--startup-runs must be 0-20 and cannot be combined with timeout/crash modes")
+    verify_device_mode(args.serial, args.physical_device, args.root_files, args.real_time, args.crash_mode)
     evidence = Path(args.evidence)
     evidence.mkdir(parents=True, exist_ok=False)
 
@@ -240,6 +260,7 @@ def main():
                 return current
 
         current = wait(ready)
+        current["activityStart"] = output
         if telemetry and role != "contender":
             wait(lambda: events(current, "probe.early-startup", "span"))
             wait(lambda: events(current, "probe.early-startup"))
@@ -431,24 +452,32 @@ def main():
         assert len(recovered()) == 1
         passed(args.crash_mode + " after reset replays once under crashed session", crashed=crashed, recovery=recovery)
 
-    assert args.serial.startswith("emulator-"), "Use an emulator, not a personal device"
     assert adb("shell", "getprop", "sys.boot_completed") == "1"
     assert not args.without_native_capture or args.crash_only, "Comparison is crash-only"
+    package_info = adb("shell", "dumpsys", "package", PACKAGE)
+    uid_match = re.search(r"(?:userId|appId)=(\d+)", package_info)
+    assert uid_match, "Cannot determine the installed app UID"
+    app_uid = uid_match.group(1)
+    if args.physical_device:
+        assert adb("shell", "getprop", "ro.kernel.qemu") != "1", "Not a physical device"
+        assert int(adb("shell", "getprop", "ro.build.version.sdk")) >= 24, "UID-filtered phone logs require API 24+"
+        assert adb("shell", "run-as", PACKAGE, "id", "-u") == app_uid, "Install the Debug probe; do not root the phone"
+        assert reverse_port_available(adb("reverse", "--list")), "Port 14318 already has a USB reverse mapping; leave it untouched"
     if args.root_files:
         assert adb("shell", "getprop", "ro.debuggable") == "1"
         assert adb("shell", "id", "-u") == "0", "Run adb root on this disposable emulator first"
-        uid_match = re.search(r"(?:userId|appId)=(\d+)", adb("shell", "dumpsys", "package", PACKAGE))
-        assert uid_match, "Cannot determine the installed app UID"
-        app_uid = uid_match.group(1)
     server = ThreadingHTTPServer(("127.0.0.1", 14318), Collector)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    owned_reverse = False
+    verified_app = False
     try:
         environment = {"serial": args.serial, "api": adb("shell", "getprop", "ro.build.version.sdk"),
                        "abi": adb("shell", "getprop", "ro.product.cpu.abi"),
                        "fingerprint": adb("shell", "getprop", "ro.build.fingerprint"),
                        "rootFiles": args.root_files, "crashOnly": args.crash_only,
                        "realTime": args.real_time,
+                       "physicalDevice": args.physical_device, "startupRuns": args.startup_runs,
                        "crashMode": args.crash_mode,
                        "withoutNativeCapture": args.without_native_capture,
                        "package": adb("shell", "dumpsys", "package", PACKAGE)}
@@ -471,10 +500,31 @@ def main():
             native_capture = any(name.endswith("/libotel_android_native_crash.so") for name in archive.namelist())
             assert any(name.endswith("/libsession_probe_crash.so") for name in archive.namelist()), "Missing probe crash library"
         assert native_capture != args.without_native_capture, "APK native capture does not match the requested check"
+        verified_app = True
         inputs["installed.apk"] = apk_hash
         (evidence / "inputs-sha256.json").write_text(json.dumps(inputs, indent=2))
+        if args.physical_device:
+            adb("reverse", "--no-rebind", "tcp:14318", "tcp:14318")
+            owned_reverse = True
         stop()
         assert adb("shell", "pm", "clear", PACKAGE) == "Success"
+        if args.physical_device:
+            shell("mkdir -p files")
+            write("files/physical-device", "yes")
+        if args.startup_runs:
+            last = None
+            for index in range(args.startup_runs):
+                current = launch()
+                assert previous(current) == last
+                wait_stored(current)
+                saved = stored()
+                assert saved["id"] == current["session"]
+                assert current["setupNanos"] > 0
+                passed("cold launch with persistence", iteration=index + 1, launch=current,
+                       recordBytes=len(shell("cat " + record_path()).encode()))
+                last = current["session"]
+                stop()
+            return
         if args.real_time:
             real_time_check()
             return
@@ -603,15 +653,22 @@ def main():
     finally:
         available.set()
         try:
-            stop()
+            if verified_app:
+                stop()
         finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=5)
-            (evidence / "results.json").write_text(json.dumps(results, indent=2))
-            (evidence / "otlp-records.json").write_text(json.dumps(snapshot(), indent=2))
-            (evidence / "collector-errors.json").write_text(json.dumps(errors))
-            (evidence / "logcat.txt").write_text(adb("logcat", "-d", "-v", "threadtime"))
+            try:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+                (evidence / "results.json").write_text(json.dumps(results, indent=2))
+                (evidence / "otlp-records.json").write_text(json.dumps(snapshot(), indent=2))
+                (evidence / "collector-errors.json").write_text(json.dumps(errors))
+                if verified_app:
+                    filters = ["--uid=" + app_uid] if args.physical_device else []
+                    (evidence / "logcat.txt").write_text(adb("logcat", "-d", "-v", "threadtime", *filters))
+            finally:
+                if owned_reverse:
+                    adb("reverse", "--remove", "tcp:14318")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,28 @@
 import copy
 import unittest
 
-from verify import sampling_names, verify_checkpoint, verify_elapsed, verify_identity, verify_sampling
+from verify import reverse_port_available, sampling_names, verify_checkpoint, verify_device_mode, verify_elapsed, verify_identity, verify_sampling
+
+
+class DeviceModeTest(unittest.TestCase):
+    def test_explicit_phone_and_default_emulator(self):
+        verify_device_mode("phone", True, False, False, "abort")
+        verify_device_mode("emulator-5554", False, True, True, "abort")
+
+    def test_rejects_implicit_phone_root_and_unattended_timeout(self):
+        for args in (("phone", False, False, False, "abort"),
+                     ("phone", True, True, False, "abort"),
+                     ("phone", True, False, True, "abort"),
+                     ("phone", True, False, False, "signal"),
+                     ("emulator-5554", True, False, False, "abort")):
+            with self.subTest(args=args), self.assertRaises(AssertionError):
+                verify_device_mode(*args)
+
+    def test_does_not_replace_existing_reverse_port(self):
+        self.assertTrue(reverse_port_available(""))
+        self.assertTrue(reverse_port_available("device tcp:8000 tcp:14318\n"))
+        self.assertFalse(reverse_port_available("device tcp:14318 tcp:8000\n"))
+        self.assertFalse(reverse_port_available("device tcp:14318 tcp:14318\n"))
 
 
 class SamplingVerifierTest(unittest.TestCase):

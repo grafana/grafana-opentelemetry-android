@@ -33,6 +33,8 @@ class ProbeApplication : Application() {
     lateinit var report: JSONObject
     val hasRuntime: Boolean get() = ::runtime.isInitialized
     val realTimeEnabled: Boolean get() = File(filesDir, "realtime").exists()
+    internal val collectorEndpoint: String
+        get() = if (File(filesDir, "physical-device").exists()) "http://127.0.0.1:14318" else "http://10.0.2.2:14318"
 
     override fun onCreate() {
         super.onCreate()
@@ -54,11 +56,12 @@ class ProbeApplication : Application() {
             }
         } else {
             val buffered = File(filesDir, "buffered").exists()
+            val setupStarted = SystemClock.elapsedRealtimeNanos()
             runtime =
                 DraftSessions.initialize(
                     this,
                     GrafanaOtelConfiguration(
-                        otlpEndpoint = "http://10.0.2.2:14318",
+                        otlpEndpoint = collectorEndpoint,
                         serviceName = "local-session-draft-probe",
                         diskBufferingEnabled = buffered,
                         resourceAttributes =
@@ -71,6 +74,7 @@ class ProbeApplication : Application() {
                     ),
                     process,
                 )
+            report.put("setupNanos", SystemClock.elapsedRealtimeNanos() - setupStarted)
             val session = runtime.rum.sessionProvider.getSessionId()
             runtime.rum.emitEvent("probe.early-startup")
             runtime.rum.openTelemetry

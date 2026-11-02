@@ -4,8 +4,9 @@ This app compiles the same internal draft sources and Grafana initializer as
 the JVM tests. It adds the pinned upstream native-crash module. It is not
 included in the published package.
 
-Use a disposable emulator with the standard `10.0.2.2` host route. The driver
-refuses non-emulator serials, clears only `com.grafana.sessiondraftprobe`, changes
+Use a disposable emulator with the standard `10.0.2.2` host route. Without the
+explicit phone option below, the driver refuses non-emulator serials. It clears
+only `com.grafana.sessiondraftprobe`, changes
 permissions only in that app's sandbox and deliberately calls native `abort()` in its
 main process. It does not clear logcat, change device connectivity or send
 anything to Grafana Cloud. Do not run two receivers on port 14318 at once.
@@ -98,6 +99,43 @@ a timeout. A failure in the no-capture control does not establish that crash
 replay works.
 
 The emulator runs are local OTLP evidence, not hosted ingestion or UI validation.
+
+## Physical-device checks
+
+Use `--physical-device` with the Debug APK on an authorized Android phone running
+API 24 or newer. The driver checks `run-as` access and the installed APK hash,
+then creates a temporary `adb reverse` mapping from device loopback port 14318
+to the host loopback receiver. It refuses to replace an existing mapping and
+removes only its own mapping at exit. No root, device-wide log capture,
+connectivity changes, or Grafana Cloud endpoint is used.
+
+```sh
+/tmp/session57-probe-python/bin/python session-integration/probe/verify.py \
+  --adb "$ANDROID_HOME/platform-tools/adb" --serial "$PHONE_SERIAL" \
+  --physical-device \
+  --apk session-integration/probe/build/outputs/apk/debug/probe-debug.apk \
+  --evidence session-integration/build/evidence/new-phone-run
+```
+
+This runs the same eight regression scenarios, including an intentional native
+`abort()` in the probe only. Only the probe package is cleared or stopped. Other
+apps, Vysor and picture-in-picture windows are left alone. Do not interact with
+the probe while it runs. On disconnect, check `adb reverse --list` after
+reconnecting; cleanup cannot reach an unavailable phone.
+
+Add `--startup-runs 10` for a separate repeated cold-launch observation instead
+of the regression scenarios. It records Activity Manager launch times, elapsed
+SDK initialization time (including storage setup), persisted record size, and
+verified predecessor links. These are Debug, warm-filesystem observations with
+no baseline or performance threshold, not isolated storage overhead or
+production startup performance. Vysor and an active PiP add background load.
+
+The unattended `--real-time`, `--root-files` and signal-only crash comparison
+remain emulator-only. A phone regression pass does not repeat the four-hour
+test or establish R8 Release, hosted UI, battery or Doze behavior.
+
+The [November 2 Pixel 7 results](validation/2026-11-02-pixel7.md) record the
+Debug regression pass, cold-launch observations and remaining limits.
 
 ## Real-time timeout checks
 
