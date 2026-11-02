@@ -98,3 +98,33 @@ a timeout. A failure in the no-capture control does not establish that crash
 replay works.
 
 The emulator runs are local OTLP evidence, not hosted ingestion or UI validation.
+
+## Real-time timeout checks
+
+Add `--real-time` to the driver command for a separate run lasting about four
+hours and 31 minutes. It clears only the probe's data and uses the unchanged
+15-minute background timeout and four-hour lifetime. It does not advance a
+clock, reset a session manually or run the crash scenarios.
+
+The driver returns after 14 and 16 minutes in the background. It then leaves
+the app in the foreground, checking after 16 idle minutes and just before and
+after the new session's four-hour lifetime (3h59m and 4h1m). The test-only window
+keeps the display awake while foregrounded. Keep the host awake too, for example
+by prefixing the driver command with `caffeinate -i` on macOS. Do not interact
+with the emulator during the run.
+
+Checkpoints use an adb broadcast to a receiver protected by
+`android.permission.DUMP` to read the session ID and emit one log and span.
+No session-provider polling runs during the waits. Activity
+resume/stop timestamps, host monotonic time, PID and launch identity reject
+interrupted waits or clock disagreement. Activity callbacks are not exact SDK
+process-lifecycle notification times; the one-minute margins avoid claiming a
+millisecond boundary result. Session start/end order, previous-session links and checkpoint
+attribution are checked against the local OTLP records.
+
+`realtime-checkpoints.json` and incremental results retain completed observations
+if a later case fails. This remains unreleased-probe evidence, not validation of
+the supported Grafana package, a physical device or hosted ingestion.
+
+See the [November 2 run](validation/2026-11-02-real-time-timeouts.md) for measured
+durations, source pins and the remaining limits.

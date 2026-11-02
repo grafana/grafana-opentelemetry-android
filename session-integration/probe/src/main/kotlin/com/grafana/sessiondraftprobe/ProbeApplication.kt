@@ -2,10 +2,14 @@ package com.grafana.sessiondraftprobe
 
 import android.app.Activity
 import android.app.Application
+import android.content.BroadcastReceiver
+import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
+import android.os.SystemClock
+import android.view.WindowManager
 import android.widget.TextView
 import com.grafana.opentelemetry.android.ColdStartSessions
 import com.grafana.opentelemetry.android.DraftSessionRuntime
@@ -17,15 +21,18 @@ import io.opentelemetry.api.trace.SpanContext
 import io.opentelemetry.api.trace.TraceFlags
 import io.opentelemetry.api.trace.TraceState
 import io.opentelemetry.context.Context
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
+import android.content.Context as AndroidContext
 
 class ProbeApplication : Application() {
     internal lateinit var runtime: DraftSessionRuntime
     lateinit var process: String
     lateinit var report: JSONObject
     val hasRuntime: Boolean get() = ::runtime.isInitialized
+    val realTimeEnabled: Boolean get() = File(filesDir, "realtime").exists()
 
     override fun onCreate() {
         super.onCreate()
@@ -106,6 +113,37 @@ class ProbeApplication : Application() {
         saveReport()
     }
 
+    fun recordLifecycle(state: String) {
+        if (!realTimeEnabled) return
+        val history = report.optJSONArray("lifecycle") ?: JSONArray()
+        history.put(JSONObject().put("state", state).put("elapsedMs", SystemClock.elapsedRealtime()))
+        report.put("lifecycle", history)
+        saveReport()
+    }
+
+    fun checkpoint(token: String) {
+        if (!realTimeEnabled || !hasRuntime) return
+        val before = SystemClock.elapsedRealtime()
+        val session = runtime.rum.sessionProvider.getSessionId()
+        val name = "probe.realtime.$token"
+        runtime.rum.emitEvent(name)
+        runtime.rum.openTelemetry
+            .getTracer("probe")
+            .spanBuilder(name)
+            .startSpan()
+            .end()
+        report.put(
+            "checkpoint",
+            JSONObject()
+                .put("token", token)
+                .put("session", session)
+                .put("beforeMs", before)
+                .put("afterMs", SystemClock.elapsedRealtime())
+                .put("wallNanos", runtime.rum.clock.now()),
+        )
+        saveReport()
+    }
+
     private fun checkSampling(phase: String) {
         val parents = mutableMapOf("root" to Context.root())
         for (remote in listOf(false, true)) {
@@ -163,6 +201,7 @@ open class ProbeActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val app = application as ProbeApplication
+        if (app.realTimeEnabled) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (app.hasRuntime && intent.getBooleanExtra("reset", false)) app.reset()
         app.report.put("actionToken", intent.getStringExtra("actionToken"))
         val crashMode = intent.getStringExtra("crashMode") ?: "abort"
@@ -180,6 +219,27 @@ open class ProbeActivity : Activity() {
     override fun onDestroy() {
         reporter.removeCallbacks(refresh)
         super.onDestroy()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        (application as ProbeApplication).recordLifecycle("foreground")
+    }
+
+    override fun onStop() {
+        super.onStop()
+        (application as ProbeApplication).recordLifecycle("background")
+    }
+}
+
+// Explicit checkpoints avoid polling the session provider during an idle interval.
+class CheckpointReceiver : BroadcastReceiver() {
+    override fun onReceive(
+        context: AndroidContext,
+        intent: Intent,
+    ) {
+        val token = intent.getStringExtra("checkpoint") ?: return
+        (context.applicationContext as ProbeApplication).checkpoint(token)
     }
 }
 

@@ -62,6 +62,38 @@ def verify_sampling(batch, phase, session):
             assert span["traceId"] == "1" * 32 and span["parentSpanId"] == "2" * 16, name
 
 
+def verify_identity(first, current):
+    for key in ("pid", "process", "launch"):
+        assert current[key] == first[key], (key, first[key], current[key])
+    assert not current.get("storageFailure"), current
+
+
+def verify_elapsed(device_ms, host_seconds, minimum, maximum=None):
+    assert device_ms >= minimum * 1000 and host_seconds >= minimum, (device_ms, host_seconds)
+    assert abs(device_ms / 1000 - host_seconds) < 10, (device_ms, host_seconds)
+    if maximum is not None:
+        assert device_ms < maximum * 1000 and host_seconds < maximum, (device_ms, host_seconds)
+
+
+def verify_checkpoint(batch, current, sessions):
+    checkpoint = current["checkpoint"]
+    assert 0 <= checkpoint["afterMs"] - checkpoint["beforeMs"] < 1000, checkpoint
+    assert checkpoint["session"] == sessions[-1], checkpoint
+    name = "probe.realtime." + checkpoint["token"]
+    for kind in ("log", "span"):
+        matches = [r for r in batch if r["kind"] == kind and r["name"] == name]
+        assert len(matches) == 1, (name, matches)
+        assert matches[0]["attrs"]["session.id"] == checkpoint["session"], matches
+    lifecycle = [r for r in batch if r["kind"] == "log" and r["name"] in ("session.start", "session.end")]
+    expected = []
+    for index, session in enumerate(sessions):
+        if index:
+            expected.append(("session.end", sessions[index - 1], None))
+        expected.append(("session.start", session, sessions[index - 1] if index else None))
+    assert [(r["name"], r["attrs"]["session.id"], r["attrs"].get("session.previous_id"))
+            for r in lifecycle] == expected, lifecycle
+
+
 class Collector(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
@@ -135,9 +167,14 @@ def main():
     parser.add_argument("--apk", required=True, help="Exact APK installed on the emulator")
     parser.add_argument("--root-files", action="store_true", help="Use a rooted disposable emulator for a non-debuggable APK")
     parser.add_argument("--crash-only", action="store_true")
+    parser.add_argument("--real-time", action="store_true", help="Run actual 14/16-minute background waits and a four-hour foreground lifetime")
     parser.add_argument("--crash-mode", choices=("abort", "signal"), default="abort")
     parser.add_argument("--without-native-capture", action="store_true", help="Expect no native-crash event from the comparison APK")
     args = parser.parse_args()
+    if not __debug__:
+        parser.error("Assertions must be enabled; do not use python -O")
+    if args.real_time and (args.crash_only or args.without_native_capture):
+        parser.error("--real-time cannot be combined with crash comparison modes")
     evidence = Path(args.evidence)
     evidence.mkdir(parents=True, exist_ok=False)
 
@@ -240,7 +277,123 @@ def main():
 
     def passed(name, **details):
         results.append(dict(test=name, status="passed", **details))
+        (evidence / "results.json").write_text(json.dumps(results, indent=2))
         print("PASS " + name, flush=True)
+
+    def real_time_check():
+        shell("mkdir -p files")
+        write("files/realtime", "yes")
+        first = launch()
+        sessions = [first["session"]]
+        checkpoints = []
+
+        def save_progress():
+            (evidence / "realtime-checkpoints.json").write_text(json.dumps(checkpoints, indent=2))
+            (evidence / "otlp-records.json").write_text(json.dumps(snapshot(), indent=2))
+
+        def current_report():
+            current = wait(lambda: report("main"))
+            verify_identity(first, current)
+            assert adb("shell", "pidof", PACKAGE) == str(first["pid"]), "Probe process changed"
+            return current
+
+        def checkpoint(token, rotate=False):
+            host_before = time.monotonic()
+            adb("shell", "am", "broadcast", "-f", "0x10000000", "-n", PACKAGE + "/.CheckpointReceiver",
+                "--es", "checkpoint", token)
+
+            def ready():
+                current = report("main")
+                return current if current and current.get("checkpoint", {}).get("token") == token else None
+
+            current = wait(ready)
+            current["hostBefore"] = host_before
+            current["hostAfter"] = time.monotonic()
+            checkpoints.append(current)
+            save_progress()
+            verify_identity(first, current)
+            if rotate:
+                assert current["checkpoint"]["session"] not in sessions, current
+                sessions.append(current["checkpoint"]["session"])
+            wait(lambda: events(current, "probe.realtime." + token))
+            wait(lambda: events(current, "probe.realtime." + token, "span"))
+            batch = [r for r in snapshot() if r["resource"].get("probe.launch") == first["launch"]]
+            verify_checkpoint(batch, current, sessions)
+            save_progress()
+            return current
+
+        def hold(until, expected_lifecycle, label):
+            print("WAIT " + label, flush=True)
+            next_progress = time.monotonic() + 300
+            while time.monotonic() < until:
+                assert not errors, errors
+                current = current_report()
+                assert current["lifecycle"] == expected_lifecycle, "Unexpected activity transition during idle wait"
+                if time.monotonic() >= next_progress:
+                    print(f"WAIT {label}: {max(0, until - time.monotonic()):.0f}s remaining", flush=True)
+                    save_progress()
+                    next_progress = time.monotonic() + 300
+                time.sleep(min(30, max(0, until - time.monotonic())))
+            assert current_report()["lifecycle"] == expected_lifecycle
+
+        baseline = checkpoint("initial")
+        assert [entry["state"] for entry in baseline["lifecycle"]] == ["foreground"]
+        for minutes, rotate in ((14, False), (16, True)):
+            before = current_report()
+            host_start = time.monotonic()
+            adb("shell", "input", "keyevent", "KEYCODE_HOME")
+
+            def backgrounded():
+                current = report("main")
+                if current and len(current["lifecycle"]) == len(before["lifecycle"]) + 1:
+                    assert current["lifecycle"][-1]["state"] == "background"
+                    return current
+
+            background = wait(backgrounded)
+            verify_identity(first, background)
+            hold(time.monotonic() + minutes * 60, background["lifecycle"], f"{minutes} minutes in background")
+            adb("shell", "input", "keyevent", "KEYCODE_WAKEUP")
+            adb("shell", "wm", "dismiss-keyguard")
+            adb("shell", "am", "start", "-W", "-f", "0x20000000", "-n", PACKAGE + "/.ProbeActivity")
+
+            def foregrounded():
+                current = report("main")
+                if current and len(current["lifecycle"]) == len(background["lifecycle"]) + 1:
+                    assert current["lifecycle"][-1]["state"] == "foreground"
+                    return current
+
+            foreground = wait(foregrounded)
+            host_elapsed = time.monotonic() - host_start
+            device_elapsed = foreground["lifecycle"][-1]["elapsedMs"] - background["lifecycle"][-1]["elapsedMs"]
+            verify_elapsed(device_elapsed, host_elapsed, minutes * 60, 900 if not rotate else None)
+            assert foreground["lifecycle"][:-1] == background["lifecycle"]
+            time.sleep(2)
+            baseline = checkpoint(f"background-{minutes}m", rotate=rotate)
+            passed(f"real-time background return after {minutes} minutes", deviceElapsedMs=device_elapsed,
+                   hostElapsedSeconds=host_elapsed, checkpoint=baseline)
+
+        # The new session is now foregrounded. Do not touch its provider between checkpoints.
+        foreground_history = baseline["lifecycle"]
+        hold(baseline["hostAfter"] + 16 * 60, foreground_history, "16 minutes idle in foreground")
+        idle = checkpoint("foreground-idle-16m")
+        verify_elapsed(idle["checkpoint"]["beforeMs"] - baseline["checkpoint"]["afterMs"],
+                       idle["hostBefore"] - baseline["hostAfter"], 16 * 60)
+        passed("foreground idle does not expire the session", checkpoint=idle)
+
+        hold(baseline["hostAfter"] + 239 * 60, foreground_history, "before four-hour lifetime")
+        before_expiry = checkpoint("lifetime-3h59m")
+        verify_elapsed(before_expiry["checkpoint"]["beforeMs"] - baseline["checkpoint"]["afterMs"],
+                       before_expiry["hostBefore"] - baseline["hostAfter"], 239 * 60, 240 * 60)
+        passed("session retained before four-hour lifetime", checkpoint=before_expiry)
+
+        hold(baseline["hostAfter"] + 241 * 60, foreground_history, "after four-hour lifetime")
+        expired = checkpoint("lifetime-4h1m", rotate=True)
+        verify_elapsed(expired["checkpoint"]["beforeMs"] - baseline["checkpoint"]["afterMs"],
+                       expired["hostBefore"] - baseline["hostAfter"], 241 * 60)
+        for current in (idle, before_expiry, expired):
+            assert current["lifecycle"] == foreground_history, "Foreground lifetime was interrupted"
+        passed("session replaced and linked after four-hour lifetime", checkpoint=expired)
+        save_progress()
 
     def crash_check():
         crashed = launch(reset=True, crash=True)
@@ -295,6 +448,7 @@ def main():
                        "abi": adb("shell", "getprop", "ro.product.cpu.abi"),
                        "fingerprint": adb("shell", "getprop", "ro.build.fingerprint"),
                        "rootFiles": args.root_files, "crashOnly": args.crash_only,
+                       "realTime": args.real_time,
                        "crashMode": args.crash_mode,
                        "withoutNativeCapture": args.without_native_capture,
                        "package": adb("shell", "dumpsys", "package", PACKAGE)}
@@ -321,6 +475,9 @@ def main():
         (evidence / "inputs-sha256.json").write_text(json.dumps(inputs, indent=2))
         stop()
         assert adb("shell", "pm", "clear", PACKAGE) == "Success"
+        if args.real_time:
+            real_time_check()
+            return
         if args.crash_only:
             crash_check()
             return

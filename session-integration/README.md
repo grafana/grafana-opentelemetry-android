@@ -109,5 +109,7 @@ timeout and four-hour maximum lifetime remain unchanged. Foreground inactivity
 tracking and configurable cross-signal sampling remain separate. The normal
 package's sampling defaults are unchanged, and export can still fail or lose data.
 
-Final validation must use the merged APIs in the supported package. Physical-device
-storage/startup cost, full-duration timeouts and hosted ingestion/UI remain separate.
+The [November 2 real-time probe run](probe/validation/2026-11-02-real-time-timeouts.md)
+covers the background timeout, foreground-idle control and full four-hour lifetime
+on an API 35 arm64 emulator. Final validation must still use the supported package.
+Physical-device storage/startup cost and hosted ingestion/UI remain separate.
