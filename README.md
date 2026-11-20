@@ -20,8 +20,8 @@ behavior.
 ## Usage
 
 See [configuration and initialization](android/README.md) for requirements, defaults and the
-experimental upstream configuration hook. The package uses the `1.7.0-alpha` OpenTelemetry Android
-BOM, which selects `android-agent` `1.7.0`.
+experimental upstream configuration hook. The package uses the `1.9.0-alpha` OpenTelemetry Android
+BOM, which selects `android-agent` `1.9.0`.
 
 ```kotlin
 val rum = GrafanaOtel.initialize(
