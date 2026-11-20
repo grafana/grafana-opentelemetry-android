@@ -47,7 +47,7 @@ val apiValidatorClasspath by configurations.creating
 dependencies {
     apiValidatorClasspath("org.ow2.asm:asm:9.6")
     apiValidatorClasspath("org.ow2.asm:asm-tree:9.6")
-    apiValidatorClasspath("org.jetbrains.kotlin:kotlin-metadata-jvm:2.3.10")
+    apiValidatorClasspath("org.jetbrains.kotlin:kotlin-metadata-jvm:2.4.21")
 }
 
 // AGP's built-in Kotlin plugin is not auto-detected by the API validator.

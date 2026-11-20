@@ -1,6 +1,6 @@
 buildscript {
     dependencies {
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.20")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.21")
         constraints {
             file("../gradle/build-tool-dependency-floors.txt").readLines().map(String::trim)
                 .filter { it.isNotEmpty() && !it.startsWith("#") }
