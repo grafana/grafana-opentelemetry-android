@@ -16,3 +16,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "grafana-opentelemetry-android"
 include(":android")
+
+apply(from = "gradle/build-tool-dependency-floors.settings.gradle.kts")

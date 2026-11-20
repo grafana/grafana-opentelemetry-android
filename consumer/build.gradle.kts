@@ -1,6 +1,17 @@
 buildscript {
     dependencies {
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.20")
+        // Same CVE floors as ../gradle/build-tool-dependency-floors.settings.gradle.kts. Applying
+        // that script here makes Android Lint crash, so the plugin classpath entries are repeated.
+        constraints {
+            classpath("org.bouncycastle:bcprov-jdk18on:1.85")
+            classpath("org.bouncycastle:bcpkix-jdk18on:1.85")
+            classpath("org.bouncycastle:bcutil-jdk18on:1.85")
+            classpath("com.google.guava:guava:33.7.2-jre")
+            classpath("org.apache.commons:commons-lang3:3.18.0")
+            classpath("org.bitbucket.b_c:jose4j:0.9.6")
+            classpath("org.jdom:jdom2:2.0.6.1")
+        }
     }
     configurations.classpath {
         resolutionStrategy.activateDependencyLocking()
