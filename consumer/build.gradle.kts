@@ -64,6 +64,12 @@ dependencies {
     "upstreamImplementation"("io.opentelemetry.android:android-agent")
 }
 
+configurations.matching { it.name.startsWith("_internal-unified-test-platform") }.configureEach {
+    file("../gradle/build-tool-dependency-floors.txt").readLines().map(String::trim)
+        .filter { it.isNotEmpty() && !it.startsWith("#") }
+        .forEach { dependencyConstraints.add(project.dependencies.constraints.create(it)) }
+}
+
 dependencyLocking {
     lockAllConfigurations()
     // This artifact is built from the same checkout; third-party dependencies remain locked.
