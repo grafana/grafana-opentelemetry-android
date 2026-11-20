@@ -12,9 +12,9 @@ OpenTelemetry APIs.
 ## Requirements
 
 - Android `minSdk` 23 or newer.
-- The `opentelemetry-android` `1.7.0-alpha` BOM, which selects `android-agent` `1.7.0`.
-- `compileSdk` 37 and Android Gradle Plugin 9.1.0 or newer for the upstream AndroidX dependencies.
-  This repository uses AGP 9.1.1 and Gradle 9.3.1.
+- The `opentelemetry-android` `1.9.0-alpha` BOM, which selects `android-agent` `1.9.0`.
+- `compileSdk` 37, which `android-agent` `1.9.0` requires. Upstream documents Android Gradle Plugin
+  8.12.0 as its minimum; this repository uses AGP 9.1.1 and Gradle 9.3.1.
 - For applications with `minSdk` below 26, enable core-library desugaring and add
   `com.android.tools:desugar_jdk_libs` (the consumer uses `2.1.4`).
 - With Android Gradle Plugin 8.3 or newer, set
@@ -68,7 +68,7 @@ through another endpoint.
 | `sessionBackgroundInactivityTimeout` | 15 minutes |
 | `sessionMaxLifetime` | 4 hours |
 
-The semantic-convention default matches upstream Android `1.7.0`. Set
+The semantic-convention default matches upstream Android `1.9.0`. Set
 `useLatestExperimentalSemanticConventions = false` explicitly to keep legacy names such as
 `device.crash` and `screen.name` instead of `app.crash` and `app.screen.name`. This compatibility
 option does not mean that only stable semantic conventions are emitted. The experimental

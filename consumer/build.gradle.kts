@@ -1,6 +1,11 @@
 buildscript {
     dependencies {
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.20")
+        constraints {
+            file("../gradle/build-tool-dependency-floors.txt").readLines().map(String::trim)
+                .filter { it.isNotEmpty() && !it.startsWith("#") }
+                .forEach { classpath(it) }
+        }
     }
     configurations.classpath {
         resolutionStrategy.activateDependencyLocking()
@@ -55,8 +60,14 @@ android {
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
     "grafanaImplementation"("com.grafana.opentelemetry:android:${file("../version.txt").readText().trim()}")
-    "upstreamImplementation"(platform("io.opentelemetry.android:opentelemetry-android-bom:1.7.0-alpha"))
+    "upstreamImplementation"(platform("io.opentelemetry.android:opentelemetry-android-bom:1.9.0-alpha"))
     "upstreamImplementation"("io.opentelemetry.android:android-agent")
+}
+
+configurations.matching { it.name.startsWith("_internal-unified-test-platform") }.configureEach {
+    file("../gradle/build-tool-dependency-floors.txt").readLines().map(String::trim)
+        .filter { it.isNotEmpty() && !it.startsWith("#") }
+        .forEach { dependencyConstraints.add(project.dependencies.constraints.create(it)) }
 }
 
 dependencyLocking {
